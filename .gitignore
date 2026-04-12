@@ -36,3 +36,4 @@ env/
 # Misc
 *.swp
 *.log
+*.hprof

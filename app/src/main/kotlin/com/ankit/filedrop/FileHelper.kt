@@ -5,6 +5,13 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import java.util.Locale
 
+enum class FilePreviewType(val label: String) {
+    IMAGE("Image"),
+    PDF("PDF"),
+    VIDEO("Video"),
+    FILE("File")
+}
+
 object FileHelper {
     fun getFileName(context: Context, uri: Uri): String {
         var result: String? = null
@@ -60,5 +67,20 @@ object FileHelper {
         val units = arrayOf("B", "KB", "MB", "GB", "TB")
         val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
         return String.format(Locale.US, "%.1f %s", bytes / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
+    }
+
+    fun getPreviewType(fileName: String, mimeType: String? = null): FilePreviewType {
+        val normalizedMime = mimeType?.lowercase(Locale.US).orEmpty()
+        val extension = fileName.substringAfterLast('.', "").lowercase(Locale.US)
+
+        return when {
+            normalizedMime.startsWith("image/") -> FilePreviewType.IMAGE
+            normalizedMime == "application/pdf" -> FilePreviewType.PDF
+            normalizedMime.startsWith("video/") -> FilePreviewType.VIDEO
+            extension in setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif") -> FilePreviewType.IMAGE
+            extension == "pdf" -> FilePreviewType.PDF
+            extension in setOf("mp4", "mov", "m4v", "mkv", "webm", "avi") -> FilePreviewType.VIDEO
+            else -> FilePreviewType.FILE
+        }
     }
 }

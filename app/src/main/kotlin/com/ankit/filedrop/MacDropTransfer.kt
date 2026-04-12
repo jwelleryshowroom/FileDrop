@@ -16,6 +16,24 @@ enum class TransferResult {
 object MacDropTransfer {
     private const val TAG = "MacDropTransfer"
 
+    private fun getFormattedDeviceName(): String {
+        val manufacturer = android.os.Build.MANUFACTURER
+        val model = android.os.Build.MODEL
+        
+        val rawName = if (model.startsWith(manufacturer, ignoreCase = true)) {
+            model
+        } else {
+            "$manufacturer $model"
+        }
+        
+        // Capitalize each word properly and clean up extra spaces
+        return rawName.split(" ")
+            .filter { it.isNotBlank() }
+            .joinToString(" ") { word ->
+                word.lowercase().replaceFirstChar { it.uppercase() }
+            }.trim()
+    }
+
     suspend fun requestTransfer(ipAddress: String, fileName: String, fileSize: Long): Boolean {
         val client = OkHttpClient.Builder()
             .connectTimeout(50, TimeUnit.SECONDS) // Slightly longer than server popup timeout
@@ -24,7 +42,7 @@ object MacDropTransfer {
         val json = JSONObject().apply {
             put("fileName", fileName)
             put("fileSize", fileSize)
-            put("deviceName", android.os.Build.MODEL)
+            put("deviceName", getFormattedDeviceName())
         }
 
         val mediaType = "application/json; charset=utf-8".toMediaType()
@@ -78,7 +96,7 @@ object MacDropTransfer {
 
         val request = Request.Builder()
             .url("http://$ipAddress:8000/upload")
-            .addHeader("X-Device-Name", android.os.Build.MODEL)
+            .addHeader("X-Device-Name", getFormattedDeviceName())
             .post(requestBody)
             .build()
 

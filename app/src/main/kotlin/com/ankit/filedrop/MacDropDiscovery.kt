@@ -5,6 +5,8 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.util.Log
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 class MacDropDiscovery(context: Context) {
     private val TAG = "MacDropDiscovery"
@@ -12,10 +14,10 @@ class MacDropDiscovery(context: Context) {
     private var discoveryListener: NsdManager.DiscoveryListener? = null
     private var discoveryScope: CoroutineScope? = null
 
-    fun startDiscovery(
-        onMacFound: (ip: String, deviceName: String) -> Unit,
-        onTimeout: () -> Unit
-    ) {
+    private val _devices = MutableStateFlow<List<MacDevice>>(emptyList())
+    val devices: StateFlow<List<MacDevice>> = _devices
+
+    fun startDiscovery() {
         stopDiscovery()
         discoveryScope = CoroutineScope(Dispatchers.Main + Job())
 
@@ -26,14 +28,20 @@ class MacDropDiscovery(context: Context) {
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                 Log.d(TAG, "📡 Service found: ${serviceInfo.serviceName}")
-                if (serviceInfo.serviceName.contains("MacDrop")) {
-                    Log.d(TAG, "🎯 MacDrop candidate found, resolving: ${serviceInfo.serviceName}")
-                    resolveService(serviceInfo, onMacFound)
+                if (isMacReceiver(serviceInfo.serviceName)) {
+                    Log.d(TAG, "🎯 MacDrop candidate found, adding to list and resolving...")
+                    
+                    // Add to list as "resolving"
+                    val newDevice = MacDevice(serviceInfo.serviceName, "", isResolving = true)
+                    _devices.value = _devices.value + newDevice
+                    
+                    resolveService(serviceInfo)
                 }
             }
 
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
                 Log.e(TAG, "📤 Service lost: ${serviceInfo.serviceName}")
+                _devices.value = _devices.value.filter { it.deviceName != serviceInfo.serviceName }
             }
 
             override fun onDiscoveryStopped(regType: String) {
@@ -54,26 +62,33 @@ class MacDropDiscovery(context: Context) {
         nsdManager.discoverServices("_http._tcp.", NsdManager.PROTOCOL_DNS_SD, discoveryListener)
 
         discoveryScope?.launch {
-            delay(10000)
+            delay(15000) // Slightly longer discovery
             if (discoveryListener != null) {
-                Log.w(TAG, "🕒 Discovery timeout reached")
-                stopDiscovery()
-                onTimeout()
+                Log.w(TAG, "🕒 Discovery cycle ended")
+                // We don't stop discovery anymore, we let it run to maintain the live list
             }
         }
     }
 
-    private fun resolveService(serviceInfo: NsdServiceInfo, onMacFound: (ip: String, deviceName: String) -> Unit) {
+    private fun resolveService(serviceInfo: NsdServiceInfo) {
         val resolveListener = object : NsdManager.ResolveListener {
             override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
                 Log.e(TAG, "❌ Resolve failed: $errorCode for ${serviceInfo.serviceName}")
+                // Remove if resolution fails to keep list clean
+                _devices.value = _devices.value.filter { it.deviceName != serviceInfo.serviceName }
             }
 
             override fun onServiceResolved(resolvedInfo: NsdServiceInfo) {
-                Log.d(TAG, "✅ Service resolved: ${resolvedInfo.host.hostAddress}")
                 val ip = resolvedInfo.host.hostAddress ?: ""
-                val deviceName = resolvedInfo.serviceName
-                onMacFound(ip, deviceName)
+                val name = resolvedInfo.serviceName
+                Log.d(TAG, "✅ Service resolved: $name at $ip")
+
+                // Update the matching device in the list
+                _devices.value = _devices.value.map {
+                    if (it.deviceName == name) {
+                        it.copy(ipAddress = ip, isResolving = false)
+                    } else it
+                }
             }
         }
         nsdManager.resolveService(serviceInfo, resolveListener)
@@ -90,5 +105,9 @@ class MacDropDiscovery(context: Context) {
             }
             discoveryListener = null
         }
+    }
+
+    private fun isMacReceiver(serviceName: String): Boolean {
+        return serviceName.contains("MacDrop") && !serviceName.startsWith("MacDrop-Android-")
     }
 }
