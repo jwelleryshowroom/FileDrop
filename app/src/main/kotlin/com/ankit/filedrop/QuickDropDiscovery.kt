@@ -7,15 +7,17 @@ import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 
-class MacDropDiscovery(context: Context) {
-    private val TAG = "MacDropDiscovery"
+class QuickDropDiscovery(context: Context) {
+    private val TAG = "QuickDropDiscovery"
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
     private var discoveryListener: NsdManager.DiscoveryListener? = null
     private var discoveryScope: CoroutineScope? = null
 
-    private val _devices = MutableStateFlow<List<MacDevice>>(emptyList())
-    val devices: StateFlow<List<MacDevice>> = _devices
+    private val _devices = MutableStateFlow<List<QuickDropDevice>>(emptyList())
+    val devices: StateFlow<List<QuickDropDevice>> = _devices
 
     fun startDiscovery() {
         stopDiscovery()
@@ -28,11 +30,19 @@ class MacDropDiscovery(context: Context) {
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                 Log.d(TAG, "📡 Service found: ${serviceInfo.serviceName}")
+                
+                // --- DUPLICATE FILTERING ---
+                val exists = _devices.value.any { it.deviceName == serviceInfo.serviceName }
+                if (exists) {
+                    Log.d(TAG, "⏭️ Skipping known service: ${serviceInfo.serviceName}")
+                    return
+                }
+
                 if (isMacReceiver(serviceInfo.serviceName)) {
-                    Log.d(TAG, "🎯 MacDrop candidate found, adding to list and resolving...")
+                    Log.d(TAG, "🎯 QuickDrop candidate found, adding to list and resolving...")
                     
                     // Add to list as "resolving"
-                    val newDevice = MacDevice(serviceInfo.serviceName, "", isResolving = true)
+                    val newDevice = QuickDropDevice(serviceInfo.serviceName, "", isResolving = true)
                     _devices.value = _devices.value + newDevice
                     
                     resolveService(serviceInfo)
@@ -59,7 +69,11 @@ class MacDropDiscovery(context: Context) {
             }
         }
 
-        nsdManager.discoverServices("_http._tcp.", NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+        try {
+            nsdManager.discoverServices("_http._tcp.", NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "❌ SecurityException: Missing INTERNET/NETWORK permission for discovery", e)
+        }
 
         discoveryScope?.launch {
             delay(15000) // Slightly longer discovery
@@ -91,7 +105,12 @@ class MacDropDiscovery(context: Context) {
                 }
             }
         }
-        nsdManager.resolveService(serviceInfo, resolveListener)
+        try {
+            nsdManager.resolveService(serviceInfo, resolveListener)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "❌ SecurityException during service resolution", e)
+            _devices.value = _devices.value.filter { it.deviceName != serviceInfo.serviceName }
+        }
     }
 
     fun stopDiscovery() {
@@ -108,6 +127,6 @@ class MacDropDiscovery(context: Context) {
     }
 
     private fun isMacReceiver(serviceName: String): Boolean {
-        return serviceName.contains("MacDrop") && !serviceName.startsWith("MacDrop-Android-")
+        return serviceName.contains("QuickDrop") && !serviceName.startsWith("QuickDrop-Android-")
     }
 }

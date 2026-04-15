@@ -9,6 +9,8 @@ class ProgressRequestBody(
     private val inputStream: InputStream,
     private val contentType: MediaType?,
     private val totalByteLength: Long,
+    private val globalTotalBytes: Long = 0,
+    private val globalOffset: Long = 0,
     private val onProgress: (progress: Float, speed: String, eta: String) -> Unit
 ) : RequestBody() {
 
@@ -32,15 +34,17 @@ class ProgressRequestBody(
                 val currentTime = System.currentTimeMillis()
                 val elapsedTimeS = (currentTime - startTime) / 1000.0
                 
-                val progress = if (totalByteLength > 0) bytesWritten.toFloat() / totalByteLength else 0f
+                val totalToCalculate = if (globalTotalBytes > 0) globalTotalBytes else totalByteLength
+                val absoluteBytesWritten = globalOffset + bytesWritten
+                val progress = if (totalToCalculate > 0) absoluteBytesWritten.toFloat() / totalToCalculate else 0f
                 
                 // Throttle updates: only emit if progress increased by at least 1% (0.01)
-                // or if it's the final chunk (1.0)
+                // or if it's the final chunk of the global transfer (1.0)
                 if (progress - lastProgressEmission >= 0.01f || progress >= 1f) {
                     val speedBps = if (elapsedTimeS > 0) bytesWritten / elapsedTimeS else 0.0
                     val speedFormatted = FileHelper.formatBytes(speedBps.toLong()) + "/s"
                     
-                    val remainingBytes = totalByteLength - bytesWritten
+                    val remainingBytes = totalToCalculate - absoluteBytesWritten
                     val etaS = if (speedBps > 0) remainingBytes / speedBps else 0.0
                     val etaFormatted = formatEta(etaS.toLong())
                     

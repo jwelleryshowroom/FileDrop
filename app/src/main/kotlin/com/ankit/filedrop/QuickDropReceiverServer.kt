@@ -12,9 +12,9 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlinx.coroutines.runBlocking
 
-class MacDropReceiverServer(
+class QuickDropReceiverServer(
     private val context: Context,
-    private val onRequest: suspend (fileName: String, fileSize: Long, deviceName: String) -> Boolean,
+    private val onRequest: suspend (fileName: String, fileSize: Long, deviceName: String, thumbnail: String?) -> Boolean,
     private val onUploadComplete: (fileName: String, fileSize: Long) -> Unit,
     private val onUploadFailed: (fileName: String) -> Unit
 ) : NanoHTTPD(8000) {
@@ -36,15 +36,16 @@ class MacDropReceiverServer(
             val fileName = json.getString("fileName")
             val fileSize = json.getLong("fileSize")
             val deviceName = json.optString("deviceName", "Unknown Device")
+            val thumbnail = json.optString("thumbnail", null)
 
             val accepted = runBlocking {
-                onRequest(fileName, fileSize, deviceName)
+                onRequest(fileName, fileSize, deviceName, thumbnail)
             }
 
             val responseJson = JSONObject().put("accepted", accepted)
             newFixedLengthResponse(Response.Status.OK, "application/json", responseJson.toString())
         } catch (e: Exception) {
-            Log.e("MacDropServer", "Error handling request", e)
+            Log.e("QuickDropServer", "Error handling request", e)
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, e.message)
         }
     }
@@ -71,12 +72,12 @@ class MacDropReceiverServer(
             saveToDownloads(fileName, tempFile)
             onUploadComplete(fileName, tempFile.length())
 
-            Log.d("MacDropServer", "Saved received file: $fileName")
+            Log.d("QuickDropServer", "Saved received file: $fileName")
 
             newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "File saved")
         } catch (e: Exception) {
             onUploadFailed(fileName)
-            Log.e("MacDropServer", "Error handling upload", e)
+            Log.e("QuickDropServer", "Error handling upload", e)
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, e.message)
         }
     }
@@ -86,7 +87,7 @@ class MacDropReceiverServer(
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
                 put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/MacDrop")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/QuickDrop")
             }
 
             val resolver = context.contentResolver
@@ -101,7 +102,7 @@ class MacDropReceiverServer(
         } else {
             val downloadsDir = File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                "MacDrop"
+                "QuickDrop"
             )
             downloadsDir.mkdirs()
             tempFile.inputStream().use { input ->

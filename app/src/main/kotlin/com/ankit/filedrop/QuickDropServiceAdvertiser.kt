@@ -7,7 +7,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.util.Log
 
-class MacDropServiceAdvertiser(context: Context) {
+class QuickDropServiceAdvertiser(context: Context) {
     private val appContext = context.applicationContext
     private val nsdManager = appContext.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -26,7 +26,7 @@ class MacDropServiceAdvertiser(context: Context) {
         }
 
         val serviceInfo = NsdServiceInfo().apply {
-            serviceName = "MacDrop-Android-${Build.MODEL.replace("[^A-Za-z0-9-]".toRegex(), "-")}"
+            serviceName = "QuickDrop-Android-${Build.MODEL.replace("[^A-Za-z0-9-]".toRegex(), "-")}"
             serviceType = "_http._tcp."
             setPort(port)
         }
@@ -83,6 +83,6 @@ class MacDropServiceAdvertiser(context: Context) {
     }
 
     private companion object {
-        private const val TAG = "MacDropAdvertiser"
+        private const val TAG = "QuickDropAdvertiser"
     }
 }
