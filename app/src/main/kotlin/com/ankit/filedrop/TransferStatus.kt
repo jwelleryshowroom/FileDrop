@@ -29,6 +29,17 @@ object TransferStatus {
     private val _isWaitingForNetwork = MutableStateFlow(false)
     val isWaitingForNetwork = _isWaitingForNetwork.asStateFlow()
 
+    private val _thumbnailUri = MutableStateFlow<String?>(null)
+    val thumbnailUri = _thumbnailUri.asStateFlow()
+
+    private val _fileType = MutableStateFlow<String?>("file")
+    val fileType = _fileType.asStateFlow()
+
+    fun updateMetadata(uri: String?, type: String?) {
+        _thumbnailUri.value = uri
+        _fileType.value = type
+    }
+
     fun updateQueuedCount(count: Int) {
         _queuedCount.value = count
     }

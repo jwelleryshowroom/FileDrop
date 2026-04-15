@@ -11,13 +11,37 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.GlobalScope
+import android.webkit.MimeTypeMap
+import com.ankit.filedrop.TransferStatus
+import com.ankit.filedrop.FileHelper
 
 class QuickDropReceiverServer(
     private val context: Context,
-    private val onRequest: suspend (fileName: String, fileSize: Long, deviceName: String, thumbnail: String?) -> Boolean,
+    private val onRequest: suspend (fileName: String, fileSize: Long, deviceName: String, id: String?, count: Int, senderIp: String?) -> Boolean,
     private val onUploadComplete: (fileName: String, fileSize: Long) -> Unit,
     private val onUploadFailed: (fileName: String) -> Unit
 ) : NanoHTTPD(8000) {
+
+    private var currentTotalSize = 0L
+    private var lastHandshakeTotalSize = 0L
+
+    init {
+        Log.d("ReceiverServer", "🌐 Server running on port 8000")
+        
+        // Self-Healing Cache Cleanup: Delete any stranded 2GB+ cache files from previous experimental sessions
+        try {
+            val cacheDir = context.cacheDir
+            cacheDir.listFiles { _, name -> name.startsWith("NanoHTTPD-") || name.startsWith("nano-temp-") }?.forEach { 
+                it.delete() 
+            }
+            Log.d("ReceiverServer", "🧹 Cleared residual temp files from cache.")
+        } catch (e: Exception) {
+            Log.e("ReceiverServer", "Error clearing residual cache: ${e.message}")
+        }
+    }
 
     override fun serve(session: IHTTPSession): Response {
         return when (session.uri) {
@@ -35,11 +59,15 @@ class QuickDropReceiverServer(
             val json = JSONObject(jsonStr)
             val fileName = json.getString("fileName")
             val fileSize = json.getLong("fileSize")
+            lastHandshakeTotalSize = fileSize
+            
             val deviceName = json.optString("deviceName", "Unknown Device")
-            val thumbnail = json.optString("thumbnail", null)
+            val id = json.optString("id", null)
+            val count = json.optInt("count", 1)
+            val senderIp = session.headers["http-client-ip"] ?: session.remoteIpAddress
 
             val accepted = runBlocking {
-                onRequest(fileName, fileSize, deviceName, thumbnail)
+                onRequest(fileName, fileSize, deviceName, id, count, senderIp)
             }
 
             val responseJson = JSONObject().put("accepted", accepted)
@@ -52,29 +80,71 @@ class QuickDropReceiverServer(
 
     private fun handleUpload(session: IHTTPSession): Response {
         if (session.method != Method.POST) {
-            return newFixedLengthResponse(Response.Status.METHOD_NOT_ALLOWED, MIME_PLAINTEXT, "Only POST allowed")
+            return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Only POST allowed")
         }
+
+        // Restore the original polling logic as requested, with a surgical file filter for speed
+        val totalSize = session.headers["content-length"]?.toLongOrNull() ?: lastHandshakeTotalSize
+        val progressJob = if (totalSize > 0) {
+            GlobalScope.launch {
+                val cacheDir = context.cacheDir
+                var startTime = System.currentTimeMillis()
+                
+                TransferStatus.setUploading(true) 
+                
+                while (true) {
+                    // Optimized: Only list NanoHTTPD temporary files to prevent I/O disk contention speed drop
+                    val nanoFiles = cacheDir.listFiles { _, name -> name.startsWith("NanoHTTPD-") }
+                    val currentSize = nanoFiles?.maxOfOrNull { it.length() } ?: 0L
+                    
+                    if (currentSize >= totalSize) break
+                    
+                    if (currentSize > 0) {
+                        val progress = currentSize.toFloat() / totalSize
+                        val elapsed = (System.currentTimeMillis() - startTime) / 1000f
+                        val speed = if (elapsed > 0) currentSize / elapsed else 0f
+                        val eta = if (speed > 100) ((totalSize - currentSize) / speed).toInt() else 0
+                        
+                        TransferStatus.updateProgress(
+                            progress,
+                            FileHelper.formatBytes(speed.toLong()) + "/s",
+                            if (eta > 0) "${eta}s left" else "Calculating..."
+                        )
+                    }
+                    delay(200)
+                }
+            }
+        } else null
 
         var fileName = "received_file"
         return try {
             val files = HashMap<String, String>()
             session.parseBody(files)
+            progressJob?.cancel() // Stop polling
+            TransferStatus.updateProgress(1f, "0 B/s", "Complete")
 
-            val tempFilePath = files["file"] ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "No file uploaded")
-            val tempFile = File(tempFilePath)
-            fileName = sanitizeFileName(
-                session.parameters["file"]?.firstOrNull()
-                    ?: session.headers["filename"]
-                    ?: session.headers["x-filename"]
-                    ?: "received_file"
-            )
+            var savedCount = 0
+            for ((key, tempFilePath) in files) {
+                val tempFile = File(tempFilePath)
+                if (tempFile.exists() && tempFile.length() > 0) {
+                    val originalFileName = session.parameters[key]?.firstOrNull()
+                        ?: session.headers["filename"]
+                        ?: session.headers["x-filename"]
+                        ?: "received_file"
+                    val cleanName = sanitizeFileName(originalFileName)
 
-            saveToDownloads(fileName, tempFile)
-            onUploadComplete(fileName, tempFile.length())
+                    saveToDownloads(cleanName, tempFile)
+                    onUploadComplete(cleanName, tempFile.length())
+                    Log.d("QuickDropServer", "✅ Saved received file: $cleanName")
+                    savedCount++
+                }
+            }
 
-            Log.d("QuickDropServer", "Saved received file: $fileName")
+            if (savedCount == 0) {
+                return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "No valid files found in payload")
+            }
 
-            newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "File saved")
+            return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "Successfully saved $savedCount files")
         } catch (e: Exception) {
             onUploadFailed(fileName)
             Log.e("QuickDropServer", "Error handling upload", e)
@@ -83,22 +153,49 @@ class QuickDropReceiverServer(
     }
 
     private fun saveToDownloads(fileName: String, tempFile: File) {
+        // [v1.9.5] Dynamic MIME Type Mapping (Fixes Gallery Corruption)
+        val extension = MimeTypeMap.getFileExtensionFromUrl(fileName.replace(" ", "%20")) 
+            ?: fileName.substringAfterLast('.', "")
+        val mimeType = if (extension.isNotEmpty()) {
+            MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension.lowercase()) 
+                ?: "application/octet-stream"
+        } else {
+            "application/octet-stream"
+        }
+
+        Log.d("QuickDropServer", "💾 Saving as MIME: $mimeType for file: $fileName")
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
                 put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/QuickDrop")
+                put(MediaStore.MediaColumns.IS_PENDING, 1) // Android's atomic .part equivalent
             }
 
             val resolver = context.contentResolver
-            val uri = resolver.insert(MediaStore.Files.getContentUri("external"), values)
-                ?: throw IllegalStateException("Unable to create MediaStore entry")
+            val collection = MediaStore.Downloads.getContentUri("external")
+            
+            // Note: Native MediaStore.Downloads handles auto-renaming natively (Auto-appends (1), (2))
+            val uri = resolver.insert(collection, values) 
+                ?: throw IllegalStateException("Unable to create MediaStore entry for $fileName")
 
-            resolver.openOutputStream(uri)?.use { output ->
-                tempFile.inputStream().use { input ->
-                    input.copyTo(output)
-                }
-            } ?: throw IllegalStateException("Unable to open MediaStore output stream")
+            try {
+                resolver.openOutputStream(uri)?.use { output ->
+                    tempFile.inputStream().use { input ->
+                        input.copyTo(output)
+                    }
+                } ?: throw IllegalStateException("Unable to open MediaStore output stream")
+
+                // Atomic Commit: Complete the transfer and reveal the file to MediaScanner
+                values.clear()
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+            } catch (e: Exception) {
+                // Self-Healing: Destroy the ghost record if the connection dropped/failed
+                resolver.delete(uri, null, null)
+                throw e
+            }
         } else {
             val downloadsDir = File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),

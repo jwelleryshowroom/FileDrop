@@ -1,6 +1,9 @@
 import socket
 import asyncio
-from zeroconf import ServiceInfo, ServiceBrowser, ServiceStateChange
+import subprocess
+import time
+from typing import List, Dict, Optional, Tuple, Callable
+from zeroconf import ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
 from .config import PORT, SERVICE_TYPE, HOSTNAME, DEVICE_NAME
 
@@ -15,36 +18,128 @@ def get_local_ip() -> str:
     except Exception:
         return "127.0.0.1"
 
-class DiscoveryListener:
-    """Zeroconf listener that detects other MacDrop instances on the network."""
-    def __init__(self):
-        self.found_devices = []
+async def _run_dns_sd_streaming(args: List[str], duration: float, stop_condition: Callable[[str], bool] = None) -> str:
+    """Helper to run dns-sd commands and stream lines for a duration, with early exit."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "dns-sd", *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        lines = []
+        start_time = time.time()
+        while time.time() - start_time < duration:
+            try:
+                # Use a small timeout to keep the loop responsive to the duration check
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout=0.1)
+                if line:
+                    decoded = line.decode('utf-8', errors='ignore').strip()
+                    lines.append(decoded)
+                    if stop_condition and stop_condition(decoded):
+                        break
+            except asyncio.TimeoutError:
+                continue
+        
+        try:
+            proc.terminate()
+            await proc.wait()
+        except:
+            proc.kill()
+            
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"⚠️ dns-sd command failed: {e}")
+        return ""
 
-    def on_service_state_change(self, zeroconf, service_type, state_change, name):
-        if state_change is ServiceStateChange.Added:
-            info = zeroconf.get_service_info(service_type, name)
-            if info:
-                # Filter for QuickDrop devices and ignore ourselves
-                my_hostname = HOSTNAME
-                if name.startswith("QuickDrop-") and my_hostname not in name:
-                    ip = socket.inet_ntoa(info.addresses[0])
-                    device = {"name": name.split('.')[0], "ip": ip, "port": info.port}
-                    if device not in self.found_devices:
-                        self.found_devices.append(device)
-                        print(f"📱 Discovered: {device['name']} at {ip}:{info.port}")
+async def discover_devices(scan_duration: int = 5) -> Tuple[List[Dict], Optional[Dict]]:
+    """Scans the network using native macOS dns-sd for 100% reliability."""
+    print("🔍 Scanning via native macOS dns-sd...")
+    
+    # Step 1: Browse for instances (Break early if we find a QuickDrop device that is NOT the Mac)
+    def stop_browse(line):
+        return "Add" in line and "QuickDrop" in line and HOSTNAME not in line
 
-async def discover_devices(scan_duration: int = 5) -> list[dict]:
-    """Scans the network for visible MacDrop devices."""
-    print("🔍 Scanning for nearby devices...")
-    zc = AsyncZeroconf()
-    listener = DiscoveryListener()
-    browser = ServiceBrowser(zc.zeroconf, SERVICE_TYPE, handlers=[listener.on_service_state_change])
+    browse_out = await _run_dns_sd_streaming(["-B", "_http._tcp"], duration=1.5, stop_condition=stop_browse)
+    
+    instance_names = []
+    for line in browse_out.splitlines():
+        if "Add" in line and "_http._tcp." in line and "QuickDrop" in line:
+            parts = line.split()
+            try:
+                idx = parts.index("_http._tcp.")
+                name = " ".join(parts[idx+1:])
+                if name not in instance_names:
+                    instance_names.append(name)
+            except ValueError:
+                continue
 
-    await asyncio.sleep(scan_duration)
-    await zc.async_close()
-    return listener.found_devices
+    found_devices = []
+    last_device = None
 
-# Shared Zeroconf session for the server
+    for name in instance_names:
+        # Skip self conservatively
+        if name.startswith(f"QuickDrop-{HOSTNAME}"):
+            print(f"🚫 Skipping self: {name}")
+            continue
+
+        print(f"📡 Resolving native: {name}...")
+        
+        # Step 2: Extract port and target host
+        resolve_out = await _run_dns_sd_streaming(
+            ["-L", name, "_http._tcp"], 
+            duration=1.0, 
+            stop_condition=lambda l: "can be reached at" in l
+        )
+        target_host = None
+        port = PORT
+        
+        for line in resolve_out.splitlines():
+            if "can be reached at" in line:
+                parts = line.split("can be reached at")[-1].strip().split(":")
+                if len(parts) >= 2:
+                    try:
+                        port_str = parts[-1].split()[0]
+                        port = int(port_str)
+                        target_host = parts[-2].strip()
+                        break
+                    except:
+                        continue
+
+        if not target_host:
+            print(f"⏳ Resolve failed for {name}, trying next...")
+            continue
+
+        # Step 4: Resolve hostname to IPv4 address
+        ip_out = await _run_dns_sd_streaming(
+            ["-G", "v4", target_host], 
+            duration=1.0,
+            stop_condition=lambda l: "Add" in l and target_host in l and ("." in l.split()[-1] or "." in l.split()[-2])
+        )
+        ip = None
+        for line in ip_out.splitlines():
+            if target_host in line and "Add" in line:
+                parts = line.split()
+                if len(parts) >= 6:
+                    potential_ip = parts[-1] if "." in parts[-1] else parts[-2]
+                    if "." in potential_ip and ":" not in potential_ip:
+                        ip = potential_ip
+                        break
+
+        if ip:
+            device = {
+                "name": name,
+                "ip": ip,
+                "port": port
+            }
+            if not any(d["ip"] == ip for d in found_devices):
+                print(f"✅ NATIVELY DISCOVERED: {device}")
+                found_devices.append(device)
+                last_device = device
+
+    return found_devices, last_device
+
+# Shared Zeroconf session for the server (Advertisement only)
 _aio_zc = None
 _service_info = None
 

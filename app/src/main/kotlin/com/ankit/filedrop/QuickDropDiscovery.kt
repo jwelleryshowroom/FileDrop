@@ -39,13 +39,15 @@ class QuickDropDiscovery(context: Context) {
                 }
 
                 if (isMacReceiver(serviceInfo.serviceName)) {
-                    Log.d(TAG, "🎯 QuickDrop candidate found, adding to list and resolving...")
+                    Log.d(TAG, "🎯 QuickDrop candidate found: ${serviceInfo.serviceName}, resolving...")
                     
                     // Add to list as "resolving"
                     val newDevice = QuickDropDevice(serviceInfo.serviceName, "", isResolving = true)
                     _devices.value = _devices.value + newDevice
                     
                     resolveService(serviceInfo)
+                } else {
+                    Log.d(TAG, "⏭️ Ignoring non-QuickDrop or local service: ${serviceInfo.serviceName}")
                 }
             }
 
@@ -70,7 +72,8 @@ class QuickDropDiscovery(context: Context) {
         }
 
         try {
-            nsdManager.discoverServices("_http._tcp.", NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+            // Remove trailing dot for consistency with many Android NSD implementations
+            nsdManager.discoverServices("_http._tcp", NsdManager.PROTOCOL_DNS_SD, discoveryListener)
         } catch (e: SecurityException) {
             Log.e(TAG, "❌ SecurityException: Missing INTERNET/NETWORK permission for discovery", e)
         }
@@ -127,6 +130,19 @@ class QuickDropDiscovery(context: Context) {
     }
 
     private fun isMacReceiver(serviceName: String): Boolean {
-        return serviceName.contains("QuickDrop") && !serviceName.startsWith("QuickDrop-Android-")
+        // Must contain "QuickDrop" to be relevant
+        if (!serviceName.contains("QuickDrop")) return false
+        
+        // Filter out ourselves (Android device)
+        val myModel = android.os.Build.MODEL.replace("[^A-Za-z0-9]".toRegex(), "")
+        if (serviceName.contains(myModel)) {
+            Log.d(TAG, "🚫 Filtering local device: $serviceName")
+            return false
+        }
+        
+        // Must NOT be another Android device (legacy check or specific marker check)
+        if (serviceName.startsWith("QuickDrop-Android-")) return false
+        
+        return true
     }
 }

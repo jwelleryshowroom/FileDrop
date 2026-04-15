@@ -16,49 +16,8 @@ import kotlin.coroutines.resume
 class MainActivity : ComponentActivity() {
     private val viewModel: QuickDropViewModel by viewModels()
 
-    private var server: QuickDropReceiverServer? = null
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // 🚀 START RECEIVER SERVER
-        server = QuickDropReceiverServer(
-            context = this,
-            onRequest = { fileName, fileSize, deviceName, thumbnail ->
-                Log.d("Receiver", "📩 Incoming request: $fileName from $deviceName")
-                
-                suspendCancellableCoroutine<Boolean> { cont ->
-                    val type = viewModel.getFileType(fileName)
-                    val thumbUri = viewModel.saveThumbnailToCache(this@MainActivity, thumbnail)
-                    
-                    viewModel.incomingRequest.value = IncomingRequest(
-                        fileName = fileName,
-                        fileSize = fileSize,
-                        deviceName = deviceName,
-                        fileType = type,
-                        thumbnailUri = thumbUri,
-                        onDecision = { accepted ->
-                            if (cont.isActive) {
-                                cont.resume(accepted)
-                            }
-                        }
-                    )
-                }
-            },
-            onUploadComplete = { fileName, size ->
-                Log.d("Receiver", "✅ Received: $fileName ($size bytes)")
-            },
-            onUploadFailed = { fileName ->
-                Log.e("Receiver", "❌ Failed: $fileName")
-            }
-        )
-
-        try {
-            server?.start()
-            Log.d("Receiver", "🚀 Android server started on port 8000")
-        } catch (e: Exception) {
-            Log.e("Receiver", "Server failed to start", e)
-        }
 
         setContent {
             FileDropTheme {
@@ -74,7 +33,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        server?.stop()
-        Log.d("Receiver", "🛑 Server stopped")
+        // ViewModel is bound to lifecycle automatically and manages its own cleanup
     }
 }

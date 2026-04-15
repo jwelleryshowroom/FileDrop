@@ -24,15 +24,27 @@ class TransferService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val files = intent?.getStringArrayListExtra("files") ?: return START_NOT_STICKY
-        val ipAddress = intent.getStringExtra("ip") ?: return START_NOT_STICKY
-
-        synchronized(queue) {
-            queue.add(TransferRequest(files, ipAddress))
+        when (intent?.action) {
+            "ACTION_SEND" -> {
+                val files = intent.getStringArrayListExtra("files") ?: return START_NOT_STICKY
+                val ipAddress = intent.getStringExtra("ip") ?: return START_NOT_STICKY
+                synchronized(queue) {
+                    queue.add(TransferRequest(files, ipAddress))
+                }
+                updateTransferStatus()
+                processQueue()
+            }
+            "ACTION_RECEIVE_START" -> {
+                val fileName = intent.getStringExtra("fileName") ?: "Receiving..."
+                val totalSize = intent.getStringExtra("fileSize") ?: ""
+                updateNotification("Receiving $fileName...")
+                TransferStatus.setUploading(true)
+            }
+            "ACTION_RECEIVE_STOP" -> {
+                TransferStatus.setUploading(false)
+                stopSelf()
+            }
         }
-        updateTransferStatus()
-        processQueue()
-
         return START_NOT_STICKY
     }
 

@@ -31,6 +31,7 @@ data class IncomingRequest(
     val fileSize: Long,
     val deviceName: String,
     val fileType: String,
+    val count: Int = 1,
     val thumbnailUri: android.net.Uri? = null,
     val onDecision: (Boolean) -> Unit
 )
@@ -83,6 +84,12 @@ class QuickDropViewModel : ViewModel() {
     private val _selectedFileSize = MutableStateFlow("")
     val selectedFileSize: StateFlow<String> = _selectedFileSize
 
+    val queuedCount = TransferStatus.queuedCount
+
+    val isWaitingForNetwork = TransferStatus.isWaitingForNetwork
+    val transferThumbnailUri = TransferStatus.thumbnailUri
+    val transferFileType = TransferStatus.fileType
+
     // Public MutableStateFlow to allow external updates from MainActivity and Screen
     val incomingRequest = MutableStateFlow<IncomingRequest?>(null)
 
@@ -98,12 +105,6 @@ class QuickDropViewModel : ViewModel() {
     private val transferMap = ConcurrentHashMap<String, Uri>()
     private var thumbnailServer: ThumbnailServer? = null
 
-    private val _queuedCount = MutableStateFlow(0)
-    val queuedCount: StateFlow<Int> = _queuedCount
-
-    private val _isWaitingForNetwork = MutableStateFlow(false)
-    val isWaitingForNetwork: StateFlow<Boolean> = _isWaitingForNetwork
-
     private val _discoveredDevices = MutableStateFlow<List<QuickDropDevice>>(emptyList())
     // Explicitly using the backing field type for the devices Flow
     val devices: StateFlow<List<QuickDropDevice>> = _discoveredDevices
@@ -117,18 +118,7 @@ class QuickDropViewModel : ViewModel() {
         }
     }
 
-    fun saveThumbnailToCache(context: Context, base64: String?): android.net.Uri? {
-        if (base64.isNullOrBlank()) return null
-        return try {
-            val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
-            val file = java.io.File(context.cacheDir, "incoming_thumb_${System.currentTimeMillis()}.jpg")
-            java.io.FileOutputStream(file).use { it.write(bytes) }
-            android.net.Uri.fromFile(file)
-        } catch (e: Exception) {
-            android.util.Log.e("QuickDropVM", "❌ Failed to save thumbnail", e)
-            null
-        }
-    }
+    // Obsolete `saveThumbnailToCache` removed in Phase 2 Polish. Thumbnail URLs are dynamic HTTP URIs passed to Coil.
 
     // --- Handshake Intelligence Helpers (Phase 1) ---
 
@@ -172,13 +162,12 @@ class QuickDropViewModel : ViewModel() {
     }
 
     init {
+        android.util.Log.d("QuickDropVM", "🚀 INIT: Forcing advertiser start")
         viewModelScope.launch {
             launch { TransferStatus.isUploading.collect { _isUploading.value = it } }
             launch { TransferStatus.progress.collect { _uploadProgress.value = it } }
             launch { TransferStatus.speed.collect { _uploadSpeed.value = it } }
             launch { TransferStatus.eta.collect { _uploadEta.value = it } }
-            launch { TransferStatus.queuedCount.collect { _queuedCount.value = it } }
-            launch { TransferStatus.isWaitingForNetwork.collect { _isWaitingForNetwork.value = it } }
         }
     }
 
@@ -303,23 +292,88 @@ class QuickDropViewModel : ViewModel() {
     }
 
     // --- RECEIVER LOGIC ---
-
     fun startReceiver(context: Context) {
-        if (serviceAdvertiser != null) return
-        
-        Log.d("QuickDropVM", "📡 Starting Service Advertiser (mDNS)...")
-        try {
-            serviceAdvertiser = QuickDropServiceAdvertiser(context).apply {
-                start(8000)
+        if (receiverServer == null) {
+            try {
+                receiverServer = QuickDropReceiverServer(
+                    context = context,
+                    onRequest = { fileName: String, fileSize: Long, deviceName: String, id: String?, count: Int, senderIp: String? ->
+                        val deferred = CompletableDeferred<Boolean>()
+                        
+                        val thumbUri = if (!id.isNullOrBlank() && !senderIp.isNullOrBlank()) {
+                            Uri.parse("http://$senderIp:8081/thumbnail?id=$id")
+                        } else null
+                        
+                        // Bridge to UI
+                        incomingRequest.value = IncomingRequest(
+                            fileName = fileName,
+                            fileSize = fileSize,
+                            deviceName = deviceName,
+                            fileType = getFileType(fileName),
+                            count = count,
+                            thumbnailUri = thumbUri,
+                            onDecision = { accepted ->
+                                if (accepted) {
+                                    // [v1.9.0] Start Foreground Service for Reception
+                                    val intent = Intent(context, TransferService::class.java).apply {
+                                        action = "ACTION_RECEIVE_START"
+                                        putExtra("fileName", fileName)
+                                        putExtra("fileSize", FileHelper.formatBytes(fileSize))
+                                    }
+                                    androidx.core.content.ContextCompat.startForegroundService(context, intent)
+                                    TransferStatus.updateMetadata(thumbUri?.toString(), getFileType(fileName))
+                                }
+                                deferred.complete(accepted)
+                                incomingRequest.value = null // Clear dialog
+                            }
+                        )
+                        
+                        deferred.await() // Wait for user decision
+                    },
+                    onUploadComplete = { fileName, fileSize ->
+                        // [v1.9.0] Stop Foreground Service for Reception
+                        val intent = Intent(context, TransferService::class.java).apply {
+                            action = "ACTION_RECEIVE_STOP"
+                        }
+                        context.startService(intent)
+                        
+                        val result = IncomingTransferResult(fileName, fileSize, true)
+                        handleUploadComplete(fileName, fileSize)
+                    },
+                    onUploadFailed = { fileName ->
+                        // [v1.9.0] Stop Foreground Service for Reception
+                        val intent = Intent(context, TransferService::class.java).apply {
+                            action = "ACTION_RECEIVE_STOP"
+                        }
+                        context.startService(intent)
+                        
+                        handleUploadFailed(fileName)
+                    }
+                )
+                receiverServer?.start()
+                Log.d("QuickDropVM", "🚀 Receiver Server STARTED on port 8000")
+            } catch (e: Exception) {
+                Log.e("QuickDropVM", "❌ Failed to start receiver server", e)
             }
-        } catch (e: Exception) {
-            Log.e("QuickDropVM", "❌ Failed to start advertiser", e)
-            serviceAdvertiser?.stop()
-            serviceAdvertiser = null
+        }
+
+        if (serviceAdvertiser == null) {
+            try {
+                serviceAdvertiser = QuickDropServiceAdvertiser(context)
+                serviceAdvertiser?.start(8000)
+                Log.d("QuickDropVM", "📡 Advertiser STARTED")
+            } catch (e: Exception) {
+                Log.e("QuickDropVM", "❌ Failed to start advertiser", e)
+                serviceAdvertiser?.stop()
+                serviceAdvertiser = null
+            }
         }
     }
 
     fun stopReceiver() {
+        Log.d("QuickDropVM", "🛑 Stopping receiver and advertiser...")
+        receiverServer?.stop()
+        receiverServer = null
         serviceAdvertiser?.stop()
         serviceAdvertiser = null
     }
@@ -453,9 +507,16 @@ class QuickDropViewModel : ViewModel() {
                 // 3. Start Foreground Service for Upload
                 Log.d("QuickDropVM", "🚀 Handshake accepted. Starting TransferService via Intent...")
                 val intent = Intent(context, TransferService::class.java).apply {
+                    action = "ACTION_SEND"
                     putStringArrayListExtra("files", ArrayList(files.map { it.toString() }))
                     putExtra("ip", ip)
                 }
+                
+                // Update Metadata for Progress Card (Native Coil Fetch via embedded ThumbnailServer)
+                val heroFile = if (files.size == 1) FileHelper.getFileName(context, files[0]) else "${FileHelper.getFileName(context, files[0])} + ${files.size - 1}"
+                val localThumbEndpoint = "http://127.0.0.1:8081/thumbnail?id=$transferId"
+                TransferStatus.updateMetadata(localThumbEndpoint, preview.fileType)
+                
                 androidx.core.content.ContextCompat.startForegroundService(context, intent)
                 
                 // 🧹 Delayed cleanup: ensure Mac has time to finish fetching thumbnail

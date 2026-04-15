@@ -27,6 +27,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
@@ -79,11 +80,28 @@ fun PreviewBox(mimeType: String, uri: Uri) {
 @Composable
 private fun ImagePreview(uri: Uri) {
     Box(modifier = Modifier.fillMaxSize()) {
+        var loaded by remember { mutableStateOf(false) }
+        
+        // [v1.7.1] Force-reveal guard: If image doesn't load in 1.5s, show whatever we have.
+        LaunchedEffect(Unit) {
+            kotlinx.coroutines.delay(1500)
+            if (!loaded) loaded = true
+        }
+
+        val alphaVal by animateFloatAsState(
+            targetValue = if (loaded) 1f else 0f,
+            animationSpec = tween(durationMillis = 400),
+            label = "previewFade"
+        )
+        
         AsyncImage(
             model = uri,
             contentDescription = null,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop
+            onSuccess = { loaded = true },
+            modifier = Modifier.fillMaxSize().animateContentSize().alpha(alphaVal),
+            contentScale = ContentScale.Crop,
+            placeholder = androidx.compose.ui.res.painterResource(android.R.drawable.ic_menu_gallery),
+            error = androidx.compose.ui.res.painterResource(android.R.drawable.ic_menu_report_image)
         )
         // Cinematic Gradient Overlay (Top -> Down)
         Box(

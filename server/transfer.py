@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from .config import SAVE_DIR, HOSTNAME
 from .discovery import discover_devices
 from .permission import get_file_type_label
+from .thumbnail_server import thumbnail_registry
 
 class TransferRequest(BaseModel):
     """Data model for an incoming transfer request."""
@@ -69,42 +70,7 @@ class ProgressWrapper:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-async def generate_thumbnail(file_path: str) -> str:
-    """Generates a small Base64-encoded thumbnail for images using macOS native 'sips'."""
-    print(f"📸 [DEBUG] Processing file: {file_path}")
-    mime_type, _ = mimetypes.guess_type(file_path)
-    print(f"📸 [DEBUG] MIME detected: {mime_type}")
-    
-    ext = os.path.splitext(file_path)[1].lower()
-    
-    # 🖼️ Hard image check with extension fallback
-    if not mime_type or not mime_type.startswith("image/"):
-        if ext not in {'.jpg', '.jpeg', '.png', '.webp', '.heic', '.bmp'}:
-            print(f"❌ [DEBUG] Not an image extension ({ext}), skipping thumbnail")
-            return None
-        else:
-            print(f"⚠️ [DEBUG] MIME failed, but extension {ext} is supported. Proceeding...")
-
-    try:
-        # 🧪 Use native macOS 'sips' (no extra dependencies like Pillow required)
-        with tempfile.NamedTemporaryFile(suffix=".jpg") as tmp:
-            # -Z 300 ensures max dimension is 300px while maintaining aspect ratio
-            cmd = ["sips", "-Z", "300", "-s", "format", "jpeg", file_path, "--out", tmp.name]
-            result = subprocess.run(cmd, capture_output=True, check=False)
-            
-            if result.returncode == 0:
-                with open(tmp.name, "rb") as f:
-                    encoded = base64.b64encode(f.read()).decode("utf-8")
-                    print(f"✅ [DEBUG] Generated thumbnail for: {os.path.basename(file_path)} (Size: {len(encoded)} bytes)")
-                    return encoded
-            else:
-                stderr = result.stderr.decode('utf-8')
-                print(f"⚠️ [DEBUG] 'sips' failed for {file_path}: {stderr}")
-                return None
-    except Exception as e:
-        print(f"❌ [DEBUG] Thumbnail generation error: {e}")
-        return None
-    return None
+import uuid
 
 async def save_upload_file(file: UploadFile) -> str:
     """Saves an uploaded file to the local storage directory in chunks with safety checks."""
@@ -205,6 +171,12 @@ def parse_device_target(device_ip: str, default_port: int = 8000) -> Tuple[str, 
             return host, int(port_text)
     return device_ip, default_port
 
+async def cleanup_thumbnail(transfer_id: str):
+    """v1.7.1 Proactive Early Cleanup: Evict mapping after handshake window (30s)."""
+    await asyncio.sleep(30)
+    thumbnail_registry.pop(transfer_id, None)
+    # print(f"🧹 [DEBUG] [Memory] Proactively evicted transfer ID: {transfer_id}")
+
 async def send_to_device(file_paths: List[str], device_ip: str, port: int = 8000, target_name: str = None) -> None:
     """Performs the handshake and file upload to a target device (supports multiple files)."""
     device_ip, port = parse_device_target(device_ip, port)
@@ -212,12 +184,26 @@ async def send_to_device(file_paths: List[str], device_ip: str, port: int = 8000
     my_name = HOSTNAME
     display_name = target_name or device_ip
 
-    # Prepare handshake info
     total_size = sum(os.path.getsize(f) for f in file_paths)
     
-    # 🔥 ALWAYS generate hero thumbnail for the first file in batch
-    thumbnail_data = await generate_thumbnail(file_paths[0])
-    print(f"🧪 [DEBUG] HERO Thumbnail generated? {thumbnail_data is not None}")
+    # ⚡ PHASE 2 Polish: Register Thumbnail dynamically without blocking the thread
+    transfer_id = str(uuid.uuid4())
+    first_file_path = os.path.abspath(file_paths[0])
+    
+    # ⚡ [v1.7.2] IPC Bridge Registration
+    # Previously, direct dictionary writes were lost due to process isolation.
+    # We now notify the persistent Daemon (8081) via loopback POST.
+    try:
+        async with httpx.AsyncClient(timeout=1.0) as client:
+            await client.post(
+                "http://127.0.0.1:8081/internal/register",
+                json={"id": transfer_id, "path": first_file_path, "expiry": time.time() + 600}
+            )
+        # print(f"✅ [DEBUG] [IPC] Registered mapping with daemon: {transfer_id}")
+    except Exception as e:
+        print(f"⚠️ [DEBUG] [IPC] Could not notify daemon: {e}")
+
+    await asyncio.sleep(0.01) # Surgical buffer for memory visibility safety
     
     if len(file_paths) == 1:
         handshake_name = os.path.basename(file_paths[0])
@@ -245,7 +231,8 @@ async def send_to_device(file_paths: List[str], device_ip: str, port: int = 8000
                         "deviceName": my_name,
                         "fileType": get_file_type_label(first_file),
                         "previewMode": "SINGLE_FILE" if len(file_paths) == 1 else "MULTIPLE",
-                        "count": len(file_paths)
+                        "count": len(file_paths),
+                        "id": transfer_id
                     }
                     resp = await client.post(
                         f"{target_url}/request-transfer",
@@ -259,14 +246,11 @@ async def send_to_device(file_paths: List[str], device_ip: str, port: int = 8000
                         print(f"🚫 Transfer declined by {display_name}.")
                         return
 
-                    # Phase 2: Upload files
                     print(f"🚀 Transfer accepted! Sending {len(file_paths)} files...")
-                    
-                    field_name = "file"
                     files = []
-                    
                     try:
-                        for path in file_paths:
+                        for i, path in enumerate(file_paths):
+                            field_name = f"file_{i}"
                             f = open(path, "rb")
                             size = os.path.getsize(path)
                             wrapped_f = ProgressWrapper(f, size, os.path.basename(path))
@@ -282,7 +266,7 @@ async def send_to_device(file_paths: List[str], device_ip: str, port: int = 8000
                             print(f"✅ Successfully sent {len(file_paths)} files to {display_name}!")
                             return 
                         else:
-                            print(f"❌ Upload failed with status {upload_resp.status_code}")
+                            print(f"❌ Upload failed with status {upload_resp.status_code}: {upload_resp.text}")
                             return 
                     finally:
                         # Handles are closed in outer finally
@@ -329,20 +313,27 @@ async def send_file(file_paths: List[str], device_ip: str = None) -> None:
         await send_to_device(valid_paths, device_ip)
         return
 
-    found_devices = await discover_devices()
+    # Remove Stabilization Delay: Native DNS-SD is instant.
+    print("⚡ Instant discovery initiated...", flush=True)
+
+    found_devices, last_device = await discover_devices()
 
     if not found_devices:
-        print("❌ No QuickDrop devices found.")
-        return
+        if last_device:
+            print("⚠️ No new devices found. Using last known device as fallback.", flush=True)
+            found_devices = [last_device]
+        else:
+            print("❌ No QuickDrop devices found.", flush=True)
+            return
 
     print("\n--- AVAILABLE DEVICES ---")
     for i, dev in enumerate(found_devices):
         print(f"{i + 1}. {dev['name']} ({dev['ip']}:{dev['port']})")
 
-    # Auto-target Android if only one exists (legacy logic)
-    android_devices = [dev for dev in found_devices if "Android" in dev["name"]]
-    if len(android_devices) == 1:
-        target = android_devices[0]
+    # Auto-target discovered QuickDrop devices if exactly one exists
+    quickdrop_devices = [dev for dev in found_devices if "QuickDrop" in dev["name"]]
+    if len(quickdrop_devices) == 1:
+        target = quickdrop_devices[0]
         await send_to_device(valid_paths, target["ip"], target["port"], target["name"])
         return
 

@@ -3,12 +3,18 @@ import asyncio
 import traceback
 from typing import List, Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, File, UploadFile, Request
+from fastapi import FastAPI, File, UploadFile, Request, HTTPException
+from fastapi.responses import Response
+from pydantic import BaseModel
+import os
+import subprocess
+import tempfile
 from .config import IDLE_TIMEOUT
 from . import permission
 from .permission import ask_mac_permission
 from .transfer import TransferRequest, save_upload_file, save_multiple_files
 from .discovery import start_mdns_broadcast, stop_mdns_broadcast
+from .thumbnail_server import start_thumbnail_server
 
 # Global state for inactivity monitoring
 last_activity_time = time.time()
@@ -30,6 +36,7 @@ async def lifespan(app: FastAPI):
     """Manages the startup and shutdown of auxiliary services (mDNS, inactivity monitor)."""
     # Startup
     await start_mdns_broadcast()
+    start_thumbnail_server() # ✅ Phase 2: Orchestrate Sidecar
     inactivity_task = asyncio.create_task(monitor_inactivity())
     
     yield
@@ -110,22 +117,22 @@ async def request_transfer(request: TransferRequest, info: Request):
         return {"status": "error", "message": str(e), "accepted": False}
 
 @app.post("/upload")
-async def upload_file(
-    request: Request,
-    file: Optional[UploadFile] = File(None),
-    files: Optional[List[UploadFile]] = File(None)
-):
-    """Endpoint for receiving one or more files (supports 'file' and 'files' fields)."""
+async def upload_file(request: Request):
+    """Endpoint for receiving one or more files dynamically."""
     upload_list = []
-
-    if files:
-        upload_list.extend(files)
-    if file:
-        upload_list.append(file)
+    
+    try:
+        form = await request.form()
+        for key, value in form.multi_items():
+            # Starlette UploadFile objects expose a filename attribute
+            if hasattr(value, "filename") and value.filename:
+                upload_list.append(value)
+    except Exception as e:
+        print(f"⚠️ Form parsing error (potentially empty): {e}")
 
     if not upload_list:
         print("❌ No files detected in the request.")
-        return {"status": "error", "message": "No files uploaded. Use 'file' or 'files' field."}
+        return {"status": "error", "message": "No files uploaded."}
 
     print(f"📥 [DEBUG] /upload starting for {len(upload_list)} total files")
     try:

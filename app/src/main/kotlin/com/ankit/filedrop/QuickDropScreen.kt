@@ -4,11 +4,13 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -21,9 +23,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import coil.compose.AsyncImage
+import androidx.compose.ui.draw.scale
+import coil.compose.SubcomposeAsyncImage
+import coil.compose.AsyncImagePainter
 import androidx.compose.ui.layout.ContentScale
 import com.ankit.filedrop.ui.components.DeviceListView
 import com.ankit.filedrop.ui.components.SelectedDeviceCard
@@ -52,6 +58,8 @@ fun QuickDropScreen(viewModel: QuickDropViewModel) {
     val isWaitingForNetwork by viewModel.isWaitingForNetwork.collectAsState()
     val isAutoScanning by viewModel.isAutoScanning.collectAsState()
     val showOnboardingHint by viewModel.showOnboardingHint.collectAsState()
+    val transferThumbnailUri by viewModel.transferThumbnailUri.collectAsState()
+    val transferFileType by viewModel.transferFileType.collectAsState()
     val selectedFileName by viewModel.selectedFileName.collectAsState()
     val selectedFileSize by viewModel.selectedFileSize.collectAsState()
     val scope = rememberCoroutineScope()
@@ -80,6 +88,7 @@ fun QuickDropScreen(viewModel: QuickDropViewModel) {
 
     // Start Receiver Server automatically for incoming transfers
     LaunchedEffect(Unit) {
+        android.util.Log.d("QuickDropUI", "📡 Ensuring advertiser is running...")
         viewModel.startReceiver(context)
     }
 
@@ -156,6 +165,8 @@ fun QuickDropScreen(viewModel: QuickDropViewModel) {
                         eta = uploadEta,
                         queuedCount = queuedCount,
                         isWaitingForNetwork = isWaitingForNetwork,
+                        thumbnailUri = transferThumbnailUri,
+                        fileType = transferFileType,
                         onStop = { viewModel.stopTransfer(context) }
                     )
                 }
@@ -192,84 +203,158 @@ fun QuickDropScreen(viewModel: QuickDropViewModel) {
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Spacer(modifier = Modifier.height(16.dp))
-                            
                             ElevatedCard(
-                                modifier = Modifier.padding(8.dp),
-                                shape = RoundedCornerShape(24.dp),
-                                colors = CardDefaults.elevatedCardColors(
-                                    containerColor = Color.White.copy(alpha = 0.08f)
-                                ),
-                                elevation = CardDefaults.elevatedCardElevation(defaultElevation = 20.dp) // High-depth elevation
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(232.dp) // Outer card size ( parity with Mac)
-                                        .clip(RoundedCornerShape(24.dp))
-                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.1f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (request.thumbnailUri != null) {
-                                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                                            AsyncImage(
-                                                model = request.thumbnailUri,
-                                                contentDescription = null,
-                                                modifier = Modifier.fillMaxSize(),
-                                                contentScale = ContentScale.Crop
-                                            )
-                                            // Cinematic Gradient
-                                            Box(
-                                                modifier = Modifier.fillMaxSize()
-                                                    .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.3f), Color.Transparent)))
-                                            )
-                                            if (request.fileType == "video") {
-                                                Icon(
-                                                    Icons.Default.PlayArrow,
-                                                    null,
-                                                    modifier = Modifier.size(48.dp),
-                                                    tint = Color.White
-                                                )
-                                            }
-                                        }
-                                    } else {
-                                        when (request.fileType) {
-                                            "image" -> Icon(Icons.Default.Image, null, modifier = Modifier.size(100.dp), tint = MaterialTheme.colorScheme.primary)
-                                            "video" -> Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(100.dp), tint = MaterialTheme.colorScheme.secondary)
-                                            "pdf" -> Icon(Icons.Default.Description, null, modifier = Modifier.size(100.dp), tint = Color(0xFFE91E63))
-                                            else -> Icon(Icons.Default.InsertDriveFile, null, modifier = Modifier.size(100.dp), tint = MaterialTheme.colorScheme.outline)
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            Spacer(modifier = Modifier.height(24.dp))
-                            
-                            // Metadata Section (Smart Visibility - Final Consistency Rule)
-                            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = FileHelper.formatBytes(request.fileSize),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = Color.White.copy(alpha = 0.85f) // High contrast for Glass UI
-                                )
-                                
-                                val hasPreview = request.thumbnailUri != null
-                                
-                                Text(
-                                    text = when {
-                                        hasPreview && request.fileType in listOf("image", "video") -> 
-                                            request.fileType.replaceFirstChar { it.uppercase() }
-                                        else -> 
-                                            request.fileName
-                                    },
-                                    style = if (hasPreview) MaterialTheme.typography.labelLarge else MaterialTheme.typography.bodyMedium,
-                                    color = if (hasPreview) Color.White.copy(alpha = 0.6f) else Color.White.copy(alpha = 0.7f),
-                                    fontWeight = FontWeight.SemiBold,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(horizontal = 16.dp),
-                                    maxLines = 1
-                                )
-                            }
+                                 modifier = Modifier.padding(8.dp),
+                                 shape = RoundedCornerShape(24.dp),
+                                 colors = CardDefaults.elevatedCardColors(
+                                     containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                 ),
+                                 elevation = CardDefaults.elevatedCardElevation(defaultElevation = 20.dp)
+                             ) {
+                                 Box(
+                                     modifier = Modifier.padding(12.dp),
+                                     contentAlignment = Alignment.Center
+                                 ) {
+                                     // [v1.8.1] Multi-file Stack Engine
+                                     if (request.count > 1) {
+                                         // Rear Card (Inner Shadow/Depth)
+                                         Box(
+                                             modifier = Modifier
+                                                 .size(232.dp)
+                                                 .offset(y = (-8).dp)
+                                                 .scale(0.92f)
+                                                 .alpha(0.4f)
+                                                 .clip(RoundedCornerShape(24.dp))
+                                                 .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                                         )
+                                         // Middle Card
+                                         Box(
+                                             modifier = Modifier
+                                                 .size(232.dp)
+                                                 .offset(y = (-4).dp)
+                                                 .scale(0.96f)
+                                                 .alpha(0.7f)
+                                                 .clip(RoundedCornerShape(24.dp))
+                                                 .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f))
+                                         )
+                                     }
+
+                                     // Front Card (Main Content)
+                                     Box(
+                                         modifier = Modifier
+                                             .size(232.dp)
+                                             .clip(RoundedCornerShape(24.dp))
+                                             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f)),
+                                         contentAlignment = Alignment.Center
+                                     ) {
+                                         if (request.thumbnailUri != null) {
+                                             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                                 var loaded by remember { mutableStateOf(false) }
+            
+                                                 LaunchedEffect(Unit) {
+                                                     delay(1500)
+                                                     if (!loaded) loaded = true
+                                                 }
+                                         
+                                                 val alphaVal by animateFloatAsState(
+                                                     targetValue = if (loaded) 1f else 0f,
+                                                     animationSpec = tween(durationMillis = 400),
+                                                     label = "receiverFade"
+                                                 )
+    
+                                                 SubcomposeAsyncImage(
+                                                     model = request.thumbnailUri,
+                                                     contentDescription = null,
+                                                     modifier = Modifier.fillMaxSize().alpha(alphaVal),
+                                                     contentScale = ContentScale.Crop
+                                                 ) {
+                                                     val state = painter.state
+                                                     if (state is AsyncImagePainter.State.Success) {
+                                                         loaded = true
+                                                         Image(
+                                                             painter = painter,
+                                                             contentDescription = null,
+                                                             contentScale = ContentScale.Crop,
+                                                             modifier = Modifier.fillMaxSize()
+                                                         )
+                                                     } else {
+                                                         Box(
+                                                             modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)),
+                                                             contentAlignment = Alignment.Center
+                                                         ) {
+                                                             when (request.fileType) {
+                                                                 "image" -> Icon(Icons.Default.InsertPhoto, null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+                                                                 "video" -> Icon(Icons.Default.PlayCircle, null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f))
+                                                                 "pdf" -> Icon(Icons.Default.Description, null, modifier = Modifier.size(64.dp), tint = Color(0xFFE91E63).copy(alpha = 0.5f))
+                                                                 else -> Icon(Icons.Default.InsertDriveFile, null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                                                             }
+                                                         }
+                                                     }
+                                                 }
+                                                 Box(
+                                                     modifier = Modifier.fillMaxSize()
+                                                         .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.4f), Color.Transparent)))
+                                                 )
+                                                 if (request.fileType == "video") {
+                                                     Icon(
+                                                         Icons.Default.PlayArrow,
+                                                         null,
+                                                         modifier = Modifier.size(48.dp),
+                                                         tint = Color.White
+                                                     )
+                                                 }
+    
+                                                 // [v1.8.1] Stack Count Badge
+                                                 if (request.count > 1) {
+                                                     Surface(
+                                                         modifier = Modifier
+                                                             .align(Alignment.BottomEnd)
+                                                             .padding(12.dp),
+                                                         color = Color.Black.copy(alpha = 0.7f),
+                                                         shape = CircleShape
+                                                     ) {
+                                                         Text(
+                                                             text = "+${request.count - 1}",
+                                                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                                             color = Color.White,
+                                                             style = MaterialTheme.typography.labelMedium,
+                                                             fontWeight = FontWeight.Bold
+                                                         )
+                                                     }
+                                                 }
+                                             }
+                                         } else {
+                                             when (request.fileType) {
+                                                 "image" -> Icon(Icons.Default.InsertPhoto, null, modifier = Modifier.size(100.dp), tint = MaterialTheme.colorScheme.primary)
+                                                 "video" -> Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(100.dp), tint = MaterialTheme.colorScheme.secondary)
+                                                 "pdf" -> Icon(Icons.Default.Description, null, modifier = Modifier.size(100.dp), tint = Color(0xFFE91E63))
+                                                 else -> Icon(Icons.Default.InsertDriveFile, null, modifier = Modifier.size(100.dp), tint = MaterialTheme.colorScheme.outline)
+                                             }
+                                         }
+                                     }
+                                 }
+                             }
+                             
+                             Spacer(modifier = Modifier.height(24.dp))
+                             
+                             // Metadata Section (Dynamic Contrast Guard)
+                             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                 Text(
+                                     text = FileHelper.formatBytes(request.fileSize),
+                                     style = MaterialTheme.typography.titleMedium,
+                                     fontWeight = FontWeight.Bold,
+                                     fontFamily = FontFamily.Monospace,
+                                     color = MaterialTheme.colorScheme.onSurface // Dynamic Contrast Fix
+                                 )
+                                 
+                                 Text(
+                                     text = request.fileType.replaceFirstChar { it.uppercase() },
+                                     style = MaterialTheme.typography.labelLarge,
+                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                     fontWeight = FontWeight.SemiBold,
+                                     textAlign = TextAlign.Center
+                                 )
+                             }
                             
                             Spacer(modifier = Modifier.height(32.dp))
                             
