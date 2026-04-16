@@ -3,8 +3,9 @@ import Combine
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
+    var statusMenuItem: NSMenuItem?
+    var appMenu: NSMenu?
     let serverManager = ServerManager()
-    var previewWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -12,35 +13,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
         if let button = statusItem.button {
-            button.title = "🔴 QuickDrop" // Initial status
+            button.title = "🔴 QuickDrop"
         }
         
-        // Reactive UI Binding (Requirement)
+        constructMenu()
+        statusItem.menu = appMenu // ✅ Step 2: Native Menu Assignment (Stable)
+        
+        updateStatusUI()
+        
+        // --- Setup Pipeline Listeners ---
         serverManager.$serverStatus
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.updateStatusUI()
-            }
+            .sink { [weak self] _ in self?.updateStatusUI() }
             .store(in: &cancellables)
             
         serverManager.$pendingRequest
             .receive(on: RunLoop.main)
             .sink { [weak self] request in
-                if let request = request {
-                    self?.showIncomingRequestPanel(for: request)
+                guard let self = self else { return }
+                
+                // ✅ Prevent duplicate/unsafe trigger storm
+                guard let request = request else { return }
+                
+                DispatchQueue.main.async {
+                    self.showIncomingRequestPanel(for: request)
                 }
             }
             .store(in: &cancellables)
-        
-        constructMenu()
     }
 
     func constructMenu() {
         let menu = NSMenu()
 
         // Status Item (Informational - Requirement)
-        let statusText = "Status: \(serverManager.serverStatus)"
-        menu.addItem(NSMenuItem(title: statusText, action: nil, keyEquivalent: ""))
+        let statusItem = NSMenuItem(title: "Status: \(serverManager.serverStatus)", action: nil, keyEquivalent: "")
+        self.statusMenuItem = statusItem
+        menu.addItem(statusItem)
         
         menu.addItem(NSMenuItem.separator())
 
@@ -63,24 +70,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        let dropItem = NSMenuItem(title: "Drop Files...", action: #selector(openDropZone), keyEquivalent: "d")
+        dropItem.target = self
+        menu.addItem(dropItem)
+
+        menu.addItem(NSMenuItem.separator())
+        
         // Quit Item
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
-        statusItem.menu = menu
+        self.appMenu = menu
     }
 
     @objc func startServerAction() {
         print("🟢 Start Server Clicked")
-        
-        // Modal feedback (Requirement)
-        let alert = NSAlert()
-        alert.messageText = "Starting Server..."
-        alert.informativeText = "Check logs at /tmp/quickdrop.log"
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-        
-        print("Triggering startServer()")
         serverManager.startServer()
     }
 
@@ -107,78 +110,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showPreviewPanel(for urls: [URL]) {
-        let previewView = FilePreviewView(
-            manager: serverManager,
-            urls: urls,
-            onSend: { [weak self] in
-                print("🚀 Confirmed Send for \(urls.count) files")
-                let paths = urls.map { $0.path }
-                self?.serverManager.sendFiles(atPaths: paths)
-                self?.previewWindow?.close()
-                self?.previewWindow = nil
-            },
-            onCancel: { [weak self] in
-                print("🚫 Cancelled Send")
-                self?.previewWindow?.close()
-                self?.previewWindow = nil
-            }
-        )
+        PreviewWindowController.shared.show(urls: urls, manager: serverManager)
+    }
 
-        let hostingController = NSHostingController(rootView: previewView)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 340, height: 450),
-            styleMask: [.titled, .closable, .fullSizeContentView],
-            backing: .buffered, defer: false)
-        
-        window.center()
-        window.contentViewController = hostingController
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
-        window.isReleasedWhenClosed = false
-        window.level = .floating // Keep on top
-        
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        
-        self.previewWindow = window
+    @objc func openDropZone() {
+        print("📦 Drop Zone Triggered")
+        PreviewWindowController.shared.showDropZone { [weak self] urls in
+            guard let self = self else { return }
+            print("📦 Drop Zone Handoff: \(urls.count) files")
+            PreviewWindowController.shared.show(urls: urls, manager: self.serverManager)
+        }
     }
 
     func showIncomingRequestPanel(for request: IncomingRequest) {
-        let incomingView = IncomingTransferView(
-            request: request,
-            onAccept: { [weak self] in
-                self?.serverManager.respondToRequest(accepted: true)
-                self?.previewWindow?.close()
-                self?.previewWindow = nil
-            },
-            onDecline: { [weak self] in
-                self?.serverManager.respondToRequest(accepted: false)
-                self?.previewWindow?.close()
-                self?.previewWindow = nil
-            }
-        )
-
-        let hostingController = NSHostingController(rootView: incomingView)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 340, height: 500),
-            styleMask: [.titled, .closable, .fullSizeContentView],
-            backing: .buffered, defer: false)
-        
-        window.center()
-        window.contentViewController = hostingController
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
-        window.isReleasedWhenClosed = false
-        window.hasShadow = true
-        window.backgroundColor = .clear // Allow VisualEffectView to show
-        window.level = .floating // Stay on top
-        
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        
-        self.previewWindow = window
+        PreviewWindowController.shared.showIncoming(request: request, manager: serverManager)
     }
 
     func updateStatusUI() {
@@ -198,8 +143,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             
-            // Reconstruct menu to update the "Status" text item
-            self.constructMenu()
+            // Update status text item if it exists
+            self.statusMenuItem?.title = "Status: \(self.serverManager.serverStatus)"
         }
     }
 }
@@ -208,5 +153,5 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.accessory) // Hidden from Dock, Menu bar only
+app.setActivationPolicy(.accessory) // Pure menu-bar app (Native AirDrop style)
 app.run()

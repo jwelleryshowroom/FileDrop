@@ -9,6 +9,7 @@ class ServerManager: ObservableObject {
     
     // Progress Tracking
     @Published var isTransferring = false
+    @Published var transferResult: String? = nil
     @Published var transferProgress: Double = 0.0
     @Published var transferSpeed: String = ""
     @Published var transferEta: String = ""
@@ -301,6 +302,7 @@ class ServerManager: ObservableObject {
         do {
             print("🚀 Executing Send: \(pythonPath) \(arguments.joined(separator: " "))")
             DispatchQueue.main.async {
+                self.transferResult = nil
                 self.isTransferring = true
                 self.transferProgress = 0
             }
@@ -339,7 +341,25 @@ class ServerManager: ObservableObject {
                                 DispatchQueue.main.async {
                                     self.isWaitingForNetwork = false
                                 }
+                            } else if line.contains("Successfully sent") {
+                                DispatchQueue.main.async {
+                                    self.transferResult = "success"
+                                    self.isTransferring = false
                                 }
+                            } else if line.contains("Transfer declined") {
+                                DispatchQueue.main.async {
+                                    self.transferResult = "declined"
+                                    self.isTransferring = false
+                                }
+                            } else if line.contains("Error during transfer") ||
+                                        line.contains("Max retries reached") {
+                                DispatchQueue.main.async {
+                                    print("❌ Transfer failed detected from Python logs")
+                                    self.transferResult = "failed"
+                                    self.isTransferring = false
+                                    self.isWaitingForNetwork = false
+                                }
+                            }
                         }
                         print("PYTHON SEND:", output.trimmingCharacters(in: .whitespacesAndNewlines))
                     }
