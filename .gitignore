@@ -37,11 +37,3 @@ env/
 *.swp
 *.log
 *.hprof
-
-# QuickDrop Artifacts
-QuickDrop.dmg
-MacDrop-macOS/QuickDrop
-MacDrop-macOS/QuickDrop.app/
-temp_source/
-debug_*.py
-test_*.py

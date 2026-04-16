@@ -81,7 +81,9 @@ class ServerManager: ObservableObject {
         process.arguments = [mainScript]
         
         process.currentDirectoryURL = projectURL
-        process.environment = ProcessInfo.processInfo.environment
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONUNBUFFERED"] = "1"
+        process.environment = env
         
         // Capture output and errors for logging AND file writing
         let pipe = Pipe()
@@ -291,7 +293,9 @@ class ServerManager: ObservableObject {
         
         process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
-        process.environment = ProcessInfo.processInfo.environment
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONUNBUFFERED"] = "1"
+        process.environment = env
         
         let pipe = Pipe()
         process.standardOutput = pipe

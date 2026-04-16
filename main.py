@@ -4,6 +4,9 @@ import argparse
 import uvicorn
 from server.transfer import send_file
 
+# Force line buffering for instant UI updates (v2.1.7)
+sys.stdout.reconfigure(line_buffering=True)
+
 def run_server(dev=False):
     """Starts the FastAPI server using uvicorn."""
     print(f"🚀 QuickDrop Server Starting (dev_mode={dev})...")

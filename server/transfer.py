@@ -54,9 +54,9 @@ class ProgressWrapper:
                 eta = (self.total_size - self.bytes_read) / speed if speed > 0 else 0
                 
                 # Format for easy parsing by Swift/Kotlin
-                print(f"PROGRESS:{percentage:.4f}")
-                print(f"SPEED:{speed / (1024*1024):.2f} MB/s")
-                print(f"ETA:{int(eta)}s")
+                print(f"PROGRESS:{percentage:.4f}", flush=True)
+                print(f"SPEED:{speed / (1024*1024):.2f} MB/s", flush=True)
+                print(f"ETA:{int(eta)}s", flush=True)
 
     def close(self):
         self.f.close()
@@ -210,7 +210,7 @@ async def send_to_device(file_paths: List[str], device_ip: str, port: int = 8000
     else:
         handshake_name = f"{os.path.basename(file_paths[0])} and {len(file_paths) - 1} more files"
 
-    print(f"🤝 Handshaking with {display_name} for {len(file_paths)} files...")
+    print(f"🤝 Handshaking with {display_name} for {len(file_paths)} files...", flush=True)
     
     retry_delays = [2, 5, 10]
     attempt = 0
@@ -243,10 +243,10 @@ async def send_to_device(file_paths: List[str], device_ip: str, port: int = 8000
                     data = resp.json()
                     
                     if not data.get("accepted", False):
-                        print(f"🚫 Transfer declined by {display_name}.")
+                        print(f"🚫 Transfer declined by {display_name}.", flush=True)
                         return
 
-                    print(f"🚀 Transfer accepted! Sending {len(file_paths)} files...")
+                    print(f"🚀 Transfer accepted! Sending {len(file_paths)} files...", flush=True)
                     files = []
                     try:
                         for i, path in enumerate(file_paths):

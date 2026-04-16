@@ -90,7 +90,7 @@ async def request_transfer(request: TransferRequest, info: Request):
     last_activity_time = time.time()
     
     try:
-        print(f"⏳ Waiting for user decision via Mac popup (Source IP: {info.client.host})...")
+        print(f"⏳ Waiting for user decision via Mac popup (Source IP: {info.client.host})...", flush=True)
         # Pass the sender's IP and transfer ID to macOS for async thumbnail fetching
         accepted = await ask_mac_permission(
             device_name=request.deviceName, 
