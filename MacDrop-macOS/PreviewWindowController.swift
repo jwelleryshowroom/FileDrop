@@ -1,6 +1,12 @@
 import AppKit
 import SwiftUI
 
+// ✅ Production Subclass (v2.4.2): NSPanel is designed for utility popups
+class QuickDropWindow: NSPanel {
+    override var canBecomeKey: Bool { return true }
+    override var canBecomeMain: Bool { return true }
+}
+
 class PreviewWindowController: NSObject, NSWindowDelegate {
 
     // ✅ Singleton access point
@@ -40,7 +46,7 @@ class PreviewWindowController: NSObject, NSWindowDelegate {
             }
         )
 
-        showWindow(contentView: view, width: 340, height: 450)
+        showWindow(contentView: view, width: 340, height: 380)
     }
 
     func showIncoming(request: IncomingRequest, manager: ServerManager) {
@@ -69,7 +75,7 @@ class PreviewWindowController: NSObject, NSWindowDelegate {
             }
         )
 
-        showWindow(contentView: view, width: 340, height: 500)
+        showWindow(contentView: view, width: 340, height: 440)
     }
 
     func showDropZone(onDrop: @escaping ([URL]) -> Void) {
@@ -93,9 +99,10 @@ class PreviewWindowController: NSObject, NSWindowDelegate {
     private func showWindow<V: View>(contentView: V, width: CGFloat, height: CGFloat) {
         let hosting = NSHostingController(rootView: contentView)
 
-        let window = NSWindow(
+        // ✅ Step 1: Transition to NSPanel for floating stability (v2.4.2)
+        let window = QuickDropWindow(
             contentRect: NSRect(x: 0, y: 0, width: width, height: height),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+            styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
@@ -106,8 +113,13 @@ class PreviewWindowController: NSObject, NSWindowDelegate {
         window.isMovableByWindowBackground = true
         window.isOpaque = false
         window.backgroundColor = .clear
+        
+        // ✅ Step 2: Configure NSPanel specific behaviors
+        window.isFloatingPanel = true
         window.level = .floating
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.becomesKeyOnlyIfNeeded = false // We WANT it to become key for interaction
+        window.isReleasedWhenClosed = false
+        
         window.delegate = self
         window.hasShadow = true
 
@@ -117,7 +129,8 @@ class PreviewWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         window.center()
         window.makeKeyAndOrderFront(nil)
-        window.makeFirstResponder(window.contentView)
+        
+        print("🪟 [DEBUG] Panel Created - Is Key: \(window.isKeyWindow), Is Main: \(window.isMainWindow)")
     }
 
     func close() {
