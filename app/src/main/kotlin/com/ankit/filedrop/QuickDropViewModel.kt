@@ -54,6 +54,8 @@ class QuickDropViewModel : ViewModel() {
     private val _uiState = MutableStateFlow<UiState>(UiState.Idle)
     val uiState = _uiState.asStateFlow()
 
+    var isAppInForeground = false
+
     private val _isUploading = MutableStateFlow(false)
     val isUploading: StateFlow<Boolean> = _isUploading
 
@@ -89,6 +91,9 @@ class QuickDropViewModel : ViewModel() {
     val isWaitingForNetwork = TransferStatus.isWaitingForNetwork
     val transferThumbnailUri = TransferStatus.thumbnailUri
     val transferFileType = TransferStatus.fileType
+    
+    private val _lastSummary = MutableStateFlow<TransferSummary?>(null)
+    val lastSummary = _lastSummary.asStateFlow()
 
     // Public MutableStateFlow to allow external updates from MainActivity and Screen
     val incomingRequest = MutableStateFlow<IncomingRequest?>(null)
@@ -168,13 +173,33 @@ class QuickDropViewModel : ViewModel() {
             launch { TransferStatus.progress.collect { _uploadProgress.value = it } }
             launch { TransferStatus.speed.collect { _uploadSpeed.value = it } }
             launch { TransferStatus.eta.collect { _uploadEta.value = it } }
+            launch { TransferStatus.lastSummary.collect { _lastSummary.value = it } }
         }
     }
 
     fun stopTransfer(context: Context) {
         Log.d("QuickDropVM", "🛑 Stopping transfer service via UI request")
-        val intent = Intent(context, TransferService::class.java)
-        context.stopService(intent)
+        val intent = Intent(context, TransferService::class.java).apply {
+            action = "ACTION_CANCEL"
+        }
+        context.startService(intent)
+        
+        // 🔥 Also stop the receiver server to abort any incoming transfer
+        Log.d("QuickDropVM", "🛑 Aborting receiver server (if any)")
+        receiverServer?.stop()
+        receiverServer = null
+        startReceiver(context) // Restart it for future transfers
+        
+        // If we were receiving, mark it as cancelled
+        if (TransferStatus.isUploading.value && TransferStatus.lastSummary.value == null) {
+            TransferStatus.setSummary(TransferSummary(
+                type = "receive",
+                count = 1,
+                totalSize = "0 B",
+                result = "cancelled"
+            ))
+            TransferStatus.setUploading(false)
+        }
     }
 
     fun checkFirstLaunch(context: Context) {
@@ -188,6 +213,10 @@ class QuickDropViewModel : ViewModel() {
 
     fun dismissOnboardingHint() {
         _showOnboardingHint.value = false
+    }
+
+    fun dismissSummary() {
+        TransferStatus.clearSummary()
     }
 
     fun stopSearching() {
@@ -304,6 +333,11 @@ class QuickDropViewModel : ViewModel() {
                             Uri.parse("http://$senderIp:8081/thumbnail?id=$id")
                         } else null
                         
+                        // [NEW] Show Heads-up notification only if app is in background
+                        if (!isAppInForeground) {
+                            NotificationHelper.showIncomingRequestNotification(context, deviceName, fileName)
+                        }
+                        
                         // Bridge to UI
                         incomingRequest.value = IncomingRequest(
                             fileName = fileName,
@@ -325,29 +359,39 @@ class QuickDropViewModel : ViewModel() {
                                 }
                                 deferred.complete(accepted)
                                 incomingRequest.value = null // Clear dialog
+                                
+                                // [NEW] Clear notification
+                                NotificationHelper.cancelIncomingRequestNotification(context)
                             }
                         )
                         
                         deferred.await() // Wait for user decision
                     },
-                    onUploadComplete = { fileName, fileSize ->
+                    onUploadComplete = { count, totalSize ->
                         // [v1.9.0] Stop Foreground Service for Reception
                         val intent = Intent(context, TransferService::class.java).apply {
                             action = "ACTION_RECEIVE_STOP"
                         }
                         context.startService(intent)
                         
-                        val result = IncomingTransferResult(fileName, fileSize, true)
-                        handleUploadComplete(fileName, fileSize)
+                        handleUploadComplete(count, totalSize)
+                        
+                        // [NEW] Show Notification
+                        NotificationHelper.showCompletionNotification(context, count, totalSize)
                     },
-                    onUploadFailed = { fileName ->
+                    onUploadFailed = { fileName, error ->
                         // [v1.9.0] Stop Foreground Service for Reception
                         val intent = Intent(context, TransferService::class.java).apply {
                             action = "ACTION_RECEIVE_STOP"
                         }
                         context.startService(intent)
                         
-                        handleUploadFailed(fileName)
+                        val errorMsg = error.message ?: ""
+                        val isCancelled = errorMsg.contains("Socket closed", ignoreCase = true) ||
+                                          errorMsg.contains("Connection reset", ignoreCase = true) ||
+                                          errorMsg.contains("less than two boundary strings", ignoreCase = true)
+                                          
+                        handleUploadFailed(fileName, isCancelled)
                     }
                 )
                 receiverServer?.start()
@@ -384,14 +428,25 @@ class QuickDropViewModel : ViewModel() {
         _incomingTransferResult.value = null
     }
 
-    private fun handleUploadComplete(fileName: String, fileSize: Long) {
-        Log.d("QuickDropVM", "✅ Incoming file saved: $fileName")
-        _incomingTransferResult.value = IncomingTransferResult(fileName, fileSize, isSuccess = true)
+    private fun handleUploadComplete(count: Int, totalSize: Long) {
+        Log.d("QuickDropVM", "✅ Incoming files saved: $count files")
+        TransferStatus.setSummary(TransferSummary(
+            type = "receive",
+            count = count,
+            totalSize = FileHelper.formatBytes(totalSize),
+            result = "success"
+        ))
     }
 
-    private fun handleUploadFailed(fileName: String) {
-        Log.e("QuickDropVM", "❌ Incoming file failed: $fileName")
-        _incomingTransferResult.value = IncomingTransferResult(fileName, 0L, isSuccess = false)
+    private fun handleUploadFailed(fileName: String, isCancelled: Boolean = false) {
+        Log.e("QuickDropVM", "❌ Incoming file failed: $fileName. Cancelled: $isCancelled")
+        TransferStatus.setSummary(TransferSummary(
+            type = "receive",
+            count = 1,
+            totalSize = "0 B",
+            result = if (isCancelled) "cancelled" else "failed"
+        ))
+        TransferStatus.setUploading(false)
     }
 
     fun selectDevice(device: QuickDropDevice) {

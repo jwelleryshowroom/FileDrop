@@ -202,6 +202,11 @@ class PreviewWindowController: NSObject, NSWindowDelegate {
     }
 
     func close() {
+        // 🔥 If a transfer is active, cancel it! (Requirement Fix)
+        if ServerManager.shared.isTransferring {
+            ServerManager.shared.cancelTransfer()
+        }
+
         // 🔥 Fix: Synchronous UI hidden + nil-ing is safer for the event loop
         if let win = window {
             win.orderOut(nil) // Immediate removal from screen/focus

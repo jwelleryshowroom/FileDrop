@@ -7,6 +7,8 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -34,6 +36,8 @@ import androidx.compose.ui.layout.ContentScale
 import com.ankit.filedrop.ui.components.DeviceListView
 import com.ankit.filedrop.ui.components.SelectedDeviceCard
 import com.ankit.filedrop.ui.dialogs.FilePreviewDialog
+import com.ankit.filedrop.ui.dialogs.TransferCompleteDialog
+import com.ankit.filedrop.ui.dialogs.LogViewerDialog
 import com.ankit.filedrop.ui.views.IdleView
 import com.ankit.filedrop.ui.views.NoDevicesView
 import com.ankit.filedrop.ui.views.ScanningView
@@ -62,10 +66,14 @@ fun QuickDropScreen(viewModel: QuickDropViewModel) {
     val transferFileType by viewModel.transferFileType.collectAsState()
     val selectedFileName by viewModel.selectedFileName.collectAsState()
     val selectedFileSize by viewModel.selectedFileSize.collectAsState()
+    val lastSummary by viewModel.lastSummary.collectAsState()
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     var selectedUrisForPreview by remember { mutableStateOf<List<Uri>?>(null) }
     var showSplash by remember { mutableStateOf(true) }
+    
+    var devClickCount by remember { mutableStateOf(0) }
+    var showLogViewer by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         delay(2000)
@@ -184,6 +192,20 @@ fun QuickDropScreen(viewModel: QuickDropViewModel) {
                 }
             }
         ) { padding ->
+            // --- DEVELOPER LOG VIEWER ---
+            if (showLogViewer) {
+                LogViewerDialog(onDismiss = { showLogViewer = false })
+            }
+
+            // --- TRANSFER COMPLETE SUMMARY DIALOG ---
+            lastSummary?.let { summary ->
+                TransferCompleteDialog(
+                    summary = summary,
+                    onDismiss = { viewModel.dismissSummary() },
+                    context = context
+                )
+            }
+
             // --- INCOMING REQUEST DIALOG ---
             incomingRequest?.let { request ->
                 AlertDialog(
@@ -410,6 +432,7 @@ fun QuickDropScreen(viewModel: QuickDropViewModel) {
                             val message = when (result) {
                                 is TransferResult.Success -> "✅ Files Sent Successfully!"
                                 is TransferResult.Declined -> "Transfer declined by Mac"
+                                is TransferResult.Cancelled -> "Transfer cancelled"
                                 is TransferResult.Error -> "❌ Error: ${result.message}"
                             }
                             snackbarHostState.showSnackbar(message)
@@ -430,10 +453,20 @@ fun QuickDropScreen(viewModel: QuickDropViewModel) {
                         .padding(24.dp)
                 ) {
                     Text(
-                        text = "QuickDrop",
+                        text = "QuickDrop v2.3",
                         style = MaterialTheme.typography.displaySmall,
                         fontWeight = FontWeight.Black,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            devClickCount++
+                            if (devClickCount >= 5) {
+                                devClickCount = 0
+                                showLogViewer = true
+                            }
+                        }
                     )
                     Text(
                         text = "Drop files. Instantly.",

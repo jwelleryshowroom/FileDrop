@@ -3,6 +3,13 @@ package com.ankit.filedrop
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+data class TransferSummary(
+    val type: String, // "send" or "receive"
+    val count: Int,
+    val totalSize: String,
+    val result: String // "success", "cancelled", etc.
+)
+
 /**
  * Singleton object to communicate transfer status between the Foreground Service
  * and the ViewModel/UI.
@@ -35,6 +42,9 @@ object TransferStatus {
     private val _fileType = MutableStateFlow<String?>("file")
     val fileType = _fileType.asStateFlow()
 
+    private val _lastSummary = MutableStateFlow<TransferSummary?>(null)
+    val lastSummary = _lastSummary.asStateFlow()
+
     fun updateMetadata(uri: String?, type: String?) {
         _thumbnailUri.value = uri
         _fileType.value = type
@@ -59,6 +69,7 @@ object TransferStatus {
         if (uploading) {
             _result.value = null
             _progress.value = 0f
+            _lastSummary.value = null // Clear old summary on new transfer
         } else {
             // Reset state when not uploading to prevent stale values in UI
             _progress.value = 0f
@@ -73,5 +84,13 @@ object TransferStatus {
         _result.value = res
         // We don't set isUploading=false here anymore, 
         // the Service will call setUploading(false) when the queue is finished.
+    }
+
+    fun setSummary(summary: TransferSummary) {
+        _lastSummary.value = summary
+    }
+
+    fun clearSummary() {
+        _lastSummary.value = null
     }
 }

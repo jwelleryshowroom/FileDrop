@@ -44,6 +44,12 @@ class TransferService : Service() {
                 TransferStatus.setUploading(false)
                 stopSelf()
             }
+            "ACTION_CANCEL" -> {
+                Log.i("TransferService", "🛑 ACTION_CANCEL received")
+                QuickDropTransfer.cancelAll()
+                TransferStatus.setResult(TransferResult.Cancelled)
+                stopSelf()
+            }
         }
         return START_NOT_STICKY
     }
@@ -87,7 +93,19 @@ class TransferService : Service() {
     private suspend fun uploadFiles(paths: List<String>, ipAddress: String) {
         val uris = paths.map { Uri.parse(it) }
         
+        // Calculate total size for summary
+        var totalBytes = 0L
+        for (uri in uris) {
+            totalBytes += FileHelper.getFileSize(this, uri)
+        }
+        val sizeText = FileHelper.formatBytes(totalBytes)
+
         val result = QuickDropTransfer.uploadFiles(this, uris, ipAddress) { progress, speed, eta ->
+            // [NEW] Log progress exactly like Mac for the developer logs
+            Log.i("QuickDropTransfer", "PROGRESS:${String.format("%.4f", progress)}")
+            Log.i("QuickDropTransfer", "SPEED:$speed")
+            Log.i("QuickDropTransfer", "ETA:$eta")
+            
             TransferStatus.updateProgress(progress, speed, eta)
             val queuedCount = synchronized(queue) { queue.size }
             val queueText = if (queuedCount > 0) " (+$queuedCount queued)" else ""
@@ -95,6 +113,22 @@ class TransferService : Service() {
         }
         
         TransferStatus.setResult(result)
+        
+        // 🔥 Generate summary on success or explicit failure
+        if (result is TransferResult.Success || result is TransferResult.Cancelled || result is TransferResult.Error) {
+            val resultStr = when(result) {
+                is TransferResult.Success -> "success"
+                is TransferResult.Cancelled -> "cancelled"
+                else -> "failed"
+            }
+            TransferStatus.setSummary(TransferSummary(
+                type = "send",
+                count = uris.size,
+                totalSize = sizeText,
+                result = resultStr
+            ))
+        }
+
         updateTransferStatus()
     }
 

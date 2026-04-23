@@ -21,18 +21,23 @@ sealed class TransferResult {
     object Success : TransferResult()
     data class Error(val message: String) : TransferResult()
     object Declined : TransferResult()
+    object Cancelled : TransferResult()
 }
 
 object QuickDropTransfer {
     private const val TAG = "QuickDropTransfer"
 
     // SHARED CLIENT FOR REUSE
-    private val sharedClient: OkHttpClient by lazy {
+    val sharedClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(50, TimeUnit.SECONDS) // Long timeout for handshake popups
             .writeTimeout(0, TimeUnit.SECONDS) // No timeout for uploads
             .readTimeout(0, TimeUnit.SECONDS)
             .build()
+    }
+
+    fun cancelAll() {
+        sharedClient.dispatcher.cancelAll()
     }
 
     private fun getFormattedDeviceName(): String {
@@ -213,6 +218,18 @@ object QuickDropTransfer {
                     }
                 }
             } catch (e: Exception) {
+                // 🔥 Check for Cancellation/Interruption
+                val errorMsg = e.message ?: ""
+                if (errorMsg.contains("Canceled", ignoreCase = true) || errorMsg.contains("Socket closed", ignoreCase = true)) {
+                    Log.i(TAG, "🛑 Transfer cancelled by user.")
+                    return TransferResult.Cancelled
+                }
+                
+                if (errorMsg.contains("Connection reset", ignoreCase = true) || errorMsg.contains("Broken pipe", ignoreCase = true)) {
+                    Log.w(TAG, "⚠️ Connection lost (interrupted by Mac or Network).")
+                    return TransferResult.Error("Transfer interrupted")
+                }
+
                 retryCount++
                 lastError = e.message
                 Log.w(TAG, "⚠️ Upload attempt $retryCount failed: ${e.message}")

@@ -21,8 +21,8 @@ import com.ankit.filedrop.FileHelper
 class QuickDropReceiverServer(
     private val context: Context,
     private val onRequest: suspend (fileName: String, fileSize: Long, deviceName: String, id: String?, count: Int, senderIp: String?) -> Boolean,
-    private val onUploadComplete: (fileName: String, fileSize: Long) -> Unit,
-    private val onUploadFailed: (fileName: String) -> Unit
+    private val onUploadComplete: (count: Int, totalSize: Long) -> Unit,
+    private val onUploadFailed: (fileName: String, error: Exception) -> Unit
 ) : NanoHTTPD(8000) {
 
     private var currentTotalSize = 0L
@@ -124,6 +124,7 @@ class QuickDropReceiverServer(
             TransferStatus.updateProgress(1f, "0 B/s", "Complete")
 
             var savedCount = 0
+            var savedTotalSize = 0L
             for ((key, tempFilePath) in files) {
                 val tempFile = File(tempFilePath)
                 if (tempFile.exists() && tempFile.length() > 0) {
@@ -134,11 +135,13 @@ class QuickDropReceiverServer(
                     val cleanName = sanitizeFileName(originalFileName)
 
                     saveToDownloads(cleanName, tempFile)
-                    onUploadComplete(cleanName, tempFile.length())
+                    savedTotalSize += tempFile.length()
                     Log.d("QuickDropServer", "✅ Saved received file: $cleanName")
                     savedCount++
                 }
             }
+            
+            onUploadComplete(savedCount, savedTotalSize)
 
             if (savedCount == 0) {
                 return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "No valid files found in payload")
@@ -146,8 +149,13 @@ class QuickDropReceiverServer(
 
             return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "Successfully saved $savedCount files")
         } catch (e: Exception) {
-            onUploadFailed(fileName)
-            Log.e("QuickDropServer", "Error handling upload", e)
+            onUploadFailed(fileName, e)
+            val msg = e.message ?: ""
+            if (msg.contains("Socket closed", ignoreCase = true) || msg.contains("Connection reset", ignoreCase = true)) {
+                Log.e("QuickDropServer", "Transfer interrupted (Socket closed)")
+            } else {
+                Log.e("QuickDropServer", "Error handling upload: $msg")
+            }
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, e.message)
         }
     }

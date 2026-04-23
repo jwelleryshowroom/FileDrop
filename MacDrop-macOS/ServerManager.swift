@@ -49,6 +49,7 @@ class ServerManager: ObservableObject {
     }
     
     private var serverProcess: Process?
+    private var activeTransferProcess: Process?
     
     // Updated Paths for the modular Python backend
     private let pythonPath = "/usr/bin/python3"
@@ -314,6 +315,7 @@ class ServerManager: ObservableObject {
                 self.retryCount = 0
             }
             try process.run()
+            self.activeTransferProcess = process
             
             // --- CONTINUOUS BACKGROUND READ LOOP (SEND) ---
             DispatchQueue.global(qos: .background).async {
@@ -367,6 +369,15 @@ class ServerManager: ObservableObject {
                                     self.isTransferring = false
                                     self.isWaitingForNetwork = false
                                 }
+                            } else if line.contains("Connection reset") || line.contains("Broken pipe") {
+                                DispatchQueue.main.async {
+                                    if self.transferResult == nil {
+                                        print("⚠️ Connection lost/cancelled")
+                                        self.transferResult = "interrupted"
+                                        self.isTransferring = false
+                                        self.isWaitingForNetwork = false
+                                    }
+                                }
                             }
                         }
                         print("PYTHON SEND:", output.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -403,5 +414,21 @@ class ServerManager: ObservableObject {
                 self.pendingRequest = nil
             }
         }.resume()
+    }
+    
+    func cancelTransfer() {
+        print("🛑 Cancelling active transfer...")
+        DispatchQueue.main.async {
+            self.transferResult = "cancelled"
+            self.isTransferring = false
+            self.isWaitingForNetwork = false
+            self.sendQueue.removeAll() // Clear queue on manual cancel
+            self.updateQueuedCount()
+        }
+        
+        activeTransferProcess?.terminate()
+        activeTransferProcess = nil
+        
+        // Signal Python to stop (Optional: if we need a cleaner exit, we'd use a signal)
     }
 }
