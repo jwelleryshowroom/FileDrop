@@ -16,13 +16,9 @@ struct DropZoneView: View {
                 .font(.headline)
         }
         .frame(width: 260, height: 140)
-        .background(
+        .overlay(
             RoundedRectangle(cornerRadius: 16)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(isTargeted ? Color.accentColor : Color.gray.opacity(0.2), lineWidth: 2)
-                )
+                .stroke(isTargeted ? Color.accentColor : Color.clear, lineWidth: 2)
         )
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isTargeted) { providers in
             handleDrop(providers)

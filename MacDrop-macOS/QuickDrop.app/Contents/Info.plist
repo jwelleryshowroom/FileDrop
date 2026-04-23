@@ -11,12 +11,14 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.1.5</string>
+    <string>2.2.0</string>
     <key>CFBundleVersion</key>
-    <string>2.1.5</string>
+    <string>2.2.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>QuickDrop needs access to monitor global drag gestures for the Shake-to-Drop feature.</string>
 </dict>
 </plist>

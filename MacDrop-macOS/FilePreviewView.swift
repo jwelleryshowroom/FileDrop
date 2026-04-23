@@ -53,9 +53,6 @@ struct FilePreviewView: View {
     
     var body: some View {
         ZStack {
-            VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
-                .ignoresSafeArea()
-            
             VStack(spacing: 24) {
                 if hasCompleted {
                     // --- Completion State ---
@@ -98,10 +95,10 @@ struct FilePreviewView: View {
                                     default:
                                         return "Processing..."
                                     }
+                                } else if manager.transferProgress > 0 {
+                                    return "Sending..."
                                 } else if manager.isWaitingForNetwork {
                                     return "Waiting for network..."
-                                } else if manager.transferProgress == 0 {
-                                    return "Connecting to device..."
                                 } else {
                                     return "Waiting for user..."
                                 }
@@ -109,10 +106,7 @@ struct FilePreviewView: View {
                             .font(.headline)
                             .foregroundColor(manager.isWaitingForNetwork ? .orange : .primary)
                             
-                            if showTimeoutRing &&
-                               manager.transferResult == nil &&
-                               !manager.isWaitingForNetwork {
-                                
+                            if showTimeoutRing && manager.transferResult == nil {
                                 timeoutRing
                                     .padding(.top, 8)
                             }
@@ -249,7 +243,7 @@ struct FilePreviewView: View {
                     )
                 )
                 .rotationEffect(.degrees(-90))
-                .animation(.linear(duration: 1), value: timeoutProgress)
+                .animation(.linear(duration: 0.1), value: timeoutProgress)
         }
         .frame(width: 36, height: 36)
     }
@@ -292,7 +286,9 @@ struct FilePreviewView: View {
                 }
             }
         }
+        .frame(height: 180)
         .frame(maxWidth: .infinity)
+        .clipped() // Fix image bleeding
     }
     
     private func generateThumbnails() {
@@ -316,39 +312,41 @@ struct FilePreviewView: View {
     }
 
     private func startTimer() {
-        elapsedTime = 0
         showTimeoutRing = false
         timeoutProgress = 1.0
         
         timer?.invalidate()
         
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            elapsedTime += 1
-            
-            // After 60s → show ring
-            if elapsedTime >= 60 {
-                showTimeoutRing = true
-            }
-            
-            // Drain from 60s → 120s
-            if elapsedTime >= 60 && elapsedTime <= 120 {
-                let progress = 1.0 - ((elapsedTime - 60) / 60.0)
-                timeoutProgress = max(progress, 0)
-            }
-            
-            // At 120s → force timeout UI
-            if elapsedTime >= 120 {
-                timer?.invalidate()
+        var ringElapsedTime: Double = 0
+        let totalDrainDuration: Double = 70.0 // About the time remaining after 2nd retry
+        
+        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+            // Show ring when retryCount reaches 2 (3rd attempt)
+            if self.manager.retryCount >= 2 {
+                if !self.showTimeoutRing {
+                    self.showTimeoutRing = true
+                }
                 
-                DispatchQueue.main.async {
-                    // Only override if still no result and backend isn't actively reporting network issues
-                    if self.manager.transferResult == nil &&
-                       self.manager.isTransferring &&
-                       !self.manager.isWaitingForNetwork {
-                        
-                        self.manager.transferResult = "timeout"
-                        self.manager.isTransferring = false
+                ringElapsedTime += 0.1
+                let progress = 1.0 - (ringElapsedTime / totalDrainDuration)
+                self.timeoutProgress = max(progress, 0)
+                
+                // Only manually timeout if backend takes way too long
+                if ringElapsedTime >= (totalDrainDuration + 5.0) {
+                    self.timer?.invalidate()
+                    DispatchQueue.main.async {
+                        if self.manager.transferResult == nil && self.manager.isTransferring {
+                            self.manager.transferResult = "timeout"
+                            self.manager.isTransferring = false
+                        }
                     }
+                }
+            } else {
+                // If we somehow recovered or haven't reached 2nd retry, hide the ring
+                if self.showTimeoutRing {
+                    self.showTimeoutRing = false
+                    ringElapsedTime = 0
+                    self.timeoutProgress = 1.0
                 }
             }
         }

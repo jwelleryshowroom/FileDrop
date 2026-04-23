@@ -4,6 +4,7 @@ import AppKit
 import Network
 
 class ServerManager: ObservableObject {
+    static let shared = ServerManager()
     @Published var isServerRunning = false
     @Published var serverStatus = "Stopped"
     
@@ -16,6 +17,7 @@ class ServerManager: ObservableObject {
     @Published var queuedCount = 0
     @Published var isNetworkAvailable = true
     @Published var isWaitingForNetwork = false
+    @Published var retryCount = 0
     @Published var pendingRequest: IncomingRequest? = nil
     
     private var sendQueue: [[String]] = []
@@ -309,6 +311,7 @@ class ServerManager: ObservableObject {
                 self.transferResult = nil
                 self.isTransferring = true
                 self.transferProgress = 0
+                self.retryCount = 0
             }
             try process.run()
             
@@ -339,6 +342,7 @@ class ServerManager: ObservableObject {
                             } else if line.contains("RETRYING: Waiting for Network") {
                                 DispatchQueue.main.async {
                                     self.isWaitingForNetwork = true
+                                    self.retryCount += 1
                                 }
                             } else if line.contains("🤝 Handshaking") || line.contains("🚀 Transfer accepted") {
                                 // Clear waiting state on new attempt/success

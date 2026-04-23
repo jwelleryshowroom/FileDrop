@@ -133,7 +133,6 @@ struct IncomingTransferView: View {
             .padding(.bottom, 32)
         }
         .frame(width: 340)
-        .background(VisualEffectView(material: .hudWindow, blendingMode: .withinWindow).ignoresSafeArea())
         .onAppear {
             fetchThumbnail()
         }

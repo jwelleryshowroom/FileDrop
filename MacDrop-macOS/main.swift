@@ -5,7 +5,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var statusMenuItem: NSMenuItem?
     var appMenu: NSMenu?
-    let serverManager = ServerManager()
+    let serverManager = ServerManager.shared
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -39,6 +39,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             .store(in: &cancellables)
+            
+        ShakeGestureManager.shared.startMonitoring()
     }
 
     func constructMenu() {
